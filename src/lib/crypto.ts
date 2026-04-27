@@ -1,11 +1,11 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 
 const ALGORITHM = "aes-256-gcm";
-const KEY = Buffer.from(process.env.ENCRYPTION_KEY!, "hex");
+const getKey = () => Buffer.from(process.env.ENCRYPTION_KEY!, "hex");
 
 export function encrypt(text: string): string {
   const iv = randomBytes(16);
-  const cipher = createCipheriv(ALGORITHM, KEY, iv);
+  const cipher = createCipheriv(ALGORITHM, getKey(), iv);
   const encrypted = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
   const authTag = cipher.getAuthTag();
   // formato: iv:authTag:ciphertext (base64)
@@ -18,7 +18,7 @@ export function decrypt(encryptedData: string): string {
   const authTag = Buffer.from(authTagB64, "base64");
   const ciphertext = Buffer.from(ciphertextB64, "base64");
 
-  const decipher = createDecipheriv(ALGORITHM, KEY, iv);
+  const decipher = createDecipheriv(ALGORITHM, getKey(), iv);
   decipher.setAuthTag(authTag);
   const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   return decrypted.toString("utf8");
