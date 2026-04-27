@@ -40,8 +40,7 @@ export async function POST(req: NextRequest) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: "Datos inválidos" }, { status: 400 });
     }
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error("REGISTER_ERROR:", msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    console.error("REGISTER_ERROR:", error);
+    return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });
   }
 }

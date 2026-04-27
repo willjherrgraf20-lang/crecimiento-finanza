@@ -14,6 +14,7 @@ import {
   BarChart2,
   RefreshCw,
   LogOut,
+  Send,
 } from "lucide-react";
 import { clsx } from "clsx";
 
@@ -26,6 +27,7 @@ const NAV_ITEMS = [
   { href: "/metas", icon: Target, label: "Metas" },
   { href: "/inversiones", icon: TrendingUp, label: "Inversiones" },
   { href: "/email", icon: Mail, label: "Email Banco" },
+  { href: "/telegram", icon: Send, label: "Bot Telegram" },
   { href: "/reportes", icon: BarChart2, label: "Reportes" },
   { href: "/recurrentes", icon: RefreshCw, label: "Recurrentes" },
 ];

@@ -15,26 +15,29 @@ generator client {
 // ─── Usuarios ─────────────────────────────────────────────────────────────────
 
 model User {
-  id        String   @id @default(uuid()) @db.Uuid
-  email     String   @unique
-  name      String?
-  password  String
-  currency  String   @default("CLP")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id                 String   @id @default(uuid()) @db.Uuid
+  email              String   @unique
+  name               String?
+  password           String
+  currency           String   @default("CLP")
+  telegramChatId     String?  @unique @map("telegram_chat_id")
+  telegramLinkToken  String?  @unique @map("telegram_link_token")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
 
-  accounts          Account[]
-  categories        Category[]
-  expenses          Expense[]
-  budgets           Budget[]
-  goals             SavingsGoal[]
-  holdings          Holding[]
-  assets            Asset[]
-  trades            InvestmentTransaction[]
-  recurringExpenses RecurringExpense[]
-  syncJobs          SyncJob[]
-  gmailToken        GmailToken?
-  emailTransactions EmailTransaction[]
+  accounts             Account[]
+  categories           Category[]
+  expenses             Expense[]
+  budgets              Budget[]
+  goals                SavingsGoal[]
+  holdings             Holding[]
+  assets               Asset[]
+  trades               InvestmentTransaction[]
+  recurringExpenses    RecurringExpense[]
+  syncJobs             SyncJob[]
+  gmailToken           GmailToken?
+  emailTransactions    EmailTransaction[]
+  telegramTransactions TelegramTransaction[]
 
   @@map("users")
 }
@@ -380,4 +383,27 @@ model EmailTransaction {
   @@index([userId, status])
   @@index([userId, receivedAt(sort: Desc)])
   @@map("email_transactions")
+}
+
+// ─── Transacciones detectadas via Telegram Bot ────────────────────────────────
+
+model TelegramTransaction {
+  id             String        @id @default(uuid()) @db.Uuid
+  userId         String        @db.Uuid @map("user_id")
+  telegramFileId String        @map("telegram_file_id")
+  status         EmailTxStatus @default(PENDING)
+  parsedAmount   Decimal?      @db.Decimal(18, 2) @map("parsed_amount")
+  parsedType     String?       @map("parsed_type")
+  parsedDesc     String?       @map("parsed_desc")
+  parsedDate     DateTime?     @map("parsed_date")
+  parsedCurrency String?       @default("CLP") @map("parsed_currency")
+  rawCaption     String?       @map("raw_caption")
+  expenseId      String?       @db.Uuid @map("expense_id")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@map("telegram_transactions")
 }
