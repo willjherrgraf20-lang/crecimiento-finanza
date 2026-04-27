@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, X, ChevronDown } from "lucide-react";
+import { Check, X } from "lucide-react";
 
 interface Account {
   id: string;
