@@ -1,0 +1,383 @@
+// schema.prisma — CrecimientoFinanza
+// PostgreSQL (Supabase) + UUID nativo + Decimal para valores financieros
+// IMPORTANTE: directUrl requerido para prisma migrate con PgBouncer de Supabase
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ─── Usuarios ─────────────────────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(uuid()) @db.Uuid
+  email     String   @unique
+  name      String?
+  password  String
+  currency  String   @default("CLP")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  accounts          Account[]
+  categories        Category[]
+  expenses          Expense[]
+  budgets           Budget[]
+  goals             SavingsGoal[]
+  holdings          Holding[]
+  assets            Asset[]
+  trades            InvestmentTransaction[]
+  recurringExpenses RecurringExpense[]
+  syncJobs          SyncJob[]
+  gmailToken        GmailToken?
+  emailTransactions EmailTransaction[]
+
+  @@map("users")
+}
+
+// ─── Cuentas ──────────────────────────────────────────────────────────────────
+
+enum AccountType {
+  CHECKING
+  SAVINGS
+  CREDIT_CARD
+  CASH
+  BROKER
+  WALLET
+}
+
+model Account {
+  id             String      @id @default(uuid()) @db.Uuid
+  userId         String      @db.Uuid @map("user_id")
+  name           String
+  type           AccountType
+  currency       String      // "CLP", "USD", "USDT", etc.
+  initialBalance Decimal     @default(0) @db.Decimal(18, 2) @map("initial_balance")
+  color          String?
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  user              User                    @relation(fields: [userId], references: [id])
+  expenses          Expense[]
+  holdings          Holding[]
+  trades            InvestmentTransaction[]
+  recurringExpenses RecurringExpense[]
+
+  @@map("accounts")
+}
+
+// ─── Categorías ───────────────────────────────────────────────────────────────
+
+enum CategoryType {
+  EXPENSE
+  INCOME
+}
+
+model Category {
+  id        String       @id @default(uuid()) @db.Uuid
+  userId    String?      @db.Uuid @map("user_id")
+  name      String
+  type      CategoryType @default(EXPENSE)
+  icon      String?
+  color     String?
+  isSystem  Boolean      @default(false) @map("is_system")
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+
+  user              User?              @relation(fields: [userId], references: [id])
+  expenses          Expense[]
+  budgets           Budget[]
+  recurringExpenses RecurringExpense[]
+
+  @@map("categories")
+}
+
+// ─── Gastos / Ingresos / Transferencias ──────────────────────────────────────
+
+enum ExpenseType {
+  EXPENSE
+  INCOME
+  TRANSFER
+}
+
+model Expense {
+  id          String      @id @default(uuid()) @db.Uuid
+  userId      String      @db.Uuid @map("user_id")
+  accountId   String      @db.Uuid @map("account_id")
+  categoryId  String?     @db.Uuid @map("category_id")
+  amount      Decimal     @db.Decimal(18, 2)
+  type        ExpenseType @default(EXPENSE)
+  currency    String      @default("CLP")
+  description String?
+  date        DateTime
+  notes       String?
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id])
+  account  Account   @relation(fields: [accountId], references: [id])
+  category Category? @relation(fields: [categoryId], references: [id])
+
+  @@index([userId, date])
+  @@index([userId, categoryId])
+  @@index([userId, type])
+  @@map("expenses")
+}
+
+// ─── Presupuestos ─────────────────────────────────────────────────────────────
+
+enum BudgetPeriodType {
+  MONTHLY
+  YEARLY
+}
+
+model Budget {
+  id          String           @id @default(uuid()) @db.Uuid
+  userId      String           @db.Uuid @map("user_id")
+  categoryId  String?          @db.Uuid @map("category_id")
+  name        String
+  periodType  BudgetPeriodType @default(MONTHLY) @map("period_type")
+  periodYear  Int              @map("period_year")
+  periodMonth Int?             @map("period_month")
+  amountLimit Decimal          @db.Decimal(18, 2) @map("amount_limit")
+  currency    String           @default("CLP")
+  alertAt     Decimal?         @db.Decimal(5, 2) @map("alert_at")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id])
+  category Category? @relation(fields: [categoryId], references: [id])
+
+  @@unique([userId, categoryId, periodType, periodYear, periodMonth])
+  @@map("budgets")
+}
+
+// ─── Metas de ahorro ─────────────────────────────────────────────────────────
+
+model SavingsGoal {
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @db.Uuid @map("user_id")
+  name          String
+  targetAmount  Decimal   @db.Decimal(18, 2) @map("target_amount")
+  currentAmount Decimal   @default(0) @db.Decimal(18, 2) @map("current_amount")
+  currency      String    @default("CLP")
+  targetDate    DateTime? @map("target_date")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("savings_goals")
+}
+
+// ─── Catálogo de activos ──────────────────────────────────────────────────────
+
+enum AssetType {
+  ETF
+  STOCK
+  CRYPTO
+  BOND
+  COMMODITY
+}
+
+model Asset {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String?   @db.Uuid @map("user_id")
+  symbol    String
+  name      String
+  type      AssetType
+  currency  String    @default("USD")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  user     User?                   @relation(fields: [userId], references: [id])
+  holdings Holding[]
+  prices   AssetPrice[]
+  trades   InvestmentTransaction[]
+
+  @@unique([symbol, userId])
+  @@map("assets")
+}
+
+// ─── Posiciones del usuario ───────────────────────────────────────────────────
+
+model Holding {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @db.Uuid @map("user_id")
+  accountId    String   @db.Uuid @map("account_id")
+  assetId      String   @db.Uuid @map("asset_id")
+  quantity     Decimal  @default(0) @db.Decimal(28, 10)
+  averagePrice Decimal  @default(0) @db.Decimal(18, 6) @map("average_price")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user    User    @relation(fields: [userId], references: [id])
+  account Account @relation(fields: [accountId], references: [id])
+  asset   Asset   @relation(fields: [assetId], references: [id])
+
+  @@unique([userId, accountId, assetId])
+  @@map("holdings")
+}
+
+// ─── Transacciones de inversión ───────────────────────────────────────────────
+
+enum InvestmentTxType {
+  BUY
+  SELL
+  DEPOSIT
+  WITHDRAW
+  DIVIDEND
+  SPLIT
+}
+
+model InvestmentTransaction {
+  id          String           @id @default(uuid()) @db.Uuid
+  userId      String           @db.Uuid @map("user_id")
+  accountId   String           @db.Uuid @map("account_id")
+  assetId     String           @db.Uuid @map("asset_id")
+  type        InvestmentTxType
+  quantity    Decimal?         @db.Decimal(28, 10)
+  price       Decimal?         @db.Decimal(18, 6)
+  fee         Decimal?         @default(0) @db.Decimal(18, 2)
+  totalAmount Decimal          @db.Decimal(18, 2) @map("total_amount")
+  currency    String           @default("USD")
+  tradeDate   DateTime         @map("trade_date")
+  notes       String?
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  user    User    @relation(fields: [userId], references: [id])
+  account Account @relation(fields: [accountId], references: [id])
+  asset   Asset   @relation(fields: [assetId], references: [id])
+
+  @@index([userId, assetId, tradeDate])
+  @@map("investment_transactions")
+}
+
+// ─── Precios históricos ───────────────────────────────────────────────────────
+
+model AssetPrice {
+  id        String   @id @default(uuid()) @db.Uuid
+  assetId   String   @db.Uuid @map("asset_id")
+  price     Decimal  @db.Decimal(18, 6)
+  currency  String   @default("USD")
+  source    String
+  asOf      DateTime @map("as_of")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  asset Asset @relation(fields: [assetId], references: [id])
+
+  @@index([assetId, asOf])
+  @@map("asset_prices")
+}
+
+// ─── Gastos recurrentes ───────────────────────────────────────────────────────
+
+enum RecurringFrequency {
+  DAILY
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+  YEARLY
+}
+
+model RecurringExpense {
+  id          String             @id @default(uuid()) @db.Uuid
+  userId      String             @db.Uuid @map("user_id")
+  accountId   String             @db.Uuid @map("account_id")
+  categoryId  String?            @db.Uuid @map("category_id")
+  name        String
+  type        String             @default("EXPENSE")
+  amount      Decimal            @db.Decimal(18, 2)
+  currency    String             @default("CLP")
+  frequency   RecurringFrequency @default(MONTHLY)
+  nextDueDate DateTime           @map("next_due_date")
+  isActive    Boolean            @default(true) @map("is_active")
+  createdAt   DateTime           @default(now()) @map("created_at")
+  updatedAt   DateTime           @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id])
+  account  Account   @relation(fields: [accountId], references: [id])
+  category Category? @relation(fields: [categoryId], references: [id])
+
+  @@map("recurring_expenses")
+}
+
+// ─── Jobs de sincronización ───────────────────────────────────────────────────
+
+enum SyncJobStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+model SyncJob {
+  id         String        @id @default(uuid()) @db.Uuid
+  userId     String?       @db.Uuid @map("user_id")
+  type       String
+  status     SyncJobStatus @default(PENDING)
+  startedAt  DateTime?     @map("started_at")
+  finishedAt DateTime?     @map("finished_at")
+  details    Json?
+  createdAt  DateTime      @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId, status])
+  @@map("sync_jobs")
+}
+
+// ─── Gmail OAuth2 tokens ──────────────────────────────────────────────────────
+
+model GmailToken {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @unique @db.Uuid @map("user_id")
+  accessToken  String   @map("access_token")
+  refreshToken String   @map("refresh_token")
+  tokenType    String   @default("Bearer") @map("token_type")
+  expiresAt    DateTime @map("expires_at")
+  scope        String
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("gmail_tokens")
+}
+
+// ─── Transacciones detectadas via email ──────────────────────────────────────
+
+enum EmailTxStatus {
+  PENDING
+  CONFIRMED
+  REJECTED
+}
+
+model EmailTransaction {
+  id             String        @id @default(uuid()) @db.Uuid
+  userId         String        @db.Uuid @map("user_id")
+  gmailMessageId String        @unique @map("gmail_message_id")
+  status         EmailTxStatus @default(PENDING)
+  rawSubject     String        @map("raw_subject")
+  rawSnippet     String?       @map("raw_snippet")
+  parsedAmount   Decimal?      @db.Decimal(18, 2) @map("parsed_amount")
+  parsedType     String?       @map("parsed_type")
+  parsedDesc     String?       @map("parsed_desc")
+  parsedDate     DateTime?     @map("parsed_date")
+  parsedCurrency String?       @default("CLP") @map("parsed_currency")
+  expenseId      String?       @db.Uuid @map("expense_id")
+  receivedAt     DateTime      @map("received_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([userId, receivedAt(sort: Desc)])
+  @@map("email_transactions")
+}
