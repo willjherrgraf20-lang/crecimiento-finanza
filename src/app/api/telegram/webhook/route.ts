@@ -12,21 +12,6 @@ import {
 import { extractTransactionFromImage } from "@/lib/gemini-vision";
 import { createExpense } from "@/domain/expenses/expense.service";
 
-// ─── Estado en memoria para el flujo multi-paso ───────────────────────────────
-// En producción podría usarse Redis, pero para serverless es suficiente con
-// guardar la sesión en un campo JSON de la BD o en el mismo mensaje de Telegram.
-
-interface PendingSession {
-  txId: string;
-  amount: number;
-  type: "EXPENSE" | "INCOME" | "TRANSFER";
-  description: string;
-  currency: string;
-  step: "awaiting_account" | "awaiting_category" | "awaiting_confirmation";
-  accountId?: string;
-  categoryId?: string;
-}
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatAmount(amount: number, currency: string): string {
