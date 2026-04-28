@@ -16,6 +16,8 @@ const INCOME_PATTERNS = [
 const EXPENSE_PATTERNS: { re: RegExp; currency: string | null }[] = [
   // Pago de Tarjeta de Crédito Internacional: capturar monto CLP (ej: $39.428)
   { re: /pago\s+de\s+tarjeta[^$]*\$([\d.]+)/i, currency: "CLP" },
+  // Campo "Monto $39.428" que aparece explícitamente en snippet de Banco de Chile
+  { re: /\bmonto\b[^$]*\$([\d.]+)/i, currency: "CLP" },
   // Monto USD en formato USD$43,24 (solo cuando no hay patrón CLP previo)
   { re: /USD\$([\d.,]+)/i, currency: "USD" },
   { re: /(?:compra|pago|cargo|d[eé]bito|retiro|env[ií]o)\s+(?:aprobado|realizado|procesado)?.*?(?:\$|clp|usd|usdt)?\s*([\d.,]+)/i, currency: null },
@@ -45,6 +47,12 @@ const BANK_SENDERS = [
   { domain: "btgpactual.cl", name: "BTG Pactual" },
   // Binance
   { domain: "binance.com", name: "Binance" },
+  // Bancos adicionales
+  { domain: "scotiabank.cl",    name: "Scotiabank" },
+  { domain: "itau.cl",          name: "Itaú" },
+  { domain: "bancosecurity.cl", name: "Banco Security" },
+  { domain: "security.cl",      name: "Banco Security" },
+  { domain: "coopeuch.cl",      name: "Coopeuch" },
 ];
 
 function parseAmount(raw: string): number | null {
@@ -85,45 +93,85 @@ export function parseEmailTransaction(
 ): ParsedEmailTx | null {
   const text = `${subject} ${snippet}`;
   const normalizedText = normalize(text);
+  const subjectNorm = normalize(subject);
 
-  // Detectar tipo: intentar ingreso primero
+  // Fast path: clasificación por subject (alta precisión — bancos CL son consistentes)
+  const SUBJECT_INCOME_KW = [
+    "transferencia recibida", "abono recibido", "deposito recibido",
+    "recibiste", "te abonamos", "ingreso recibido", "recarga exitosa",
+    "pago recibido",
+  ];
+  const SUBJECT_EXPENSE_KW = [
+    "pago de tarjeta", "pago tc", "compra aprobada", "compra con tarjeta",
+    "transferencia enviada", "pago de servicio", "cargo automatico",
+    "pago realizado", "pago efectuado", "retiro", "giro",
+    "pago tarjeta de credito", "pago tarjeta credito",
+  ];
+
   let amount: number | null = null;
-  let type: "INCOME" | "EXPENSE" = "EXPENSE";
-  let confidence: "high" | "medium" | "low" = "low";
   let matchedCurrency: string | null = null;
 
-  for (const pattern of INCOME_PATTERNS) {
-    const match = text.match(pattern);
-    if (match?.[1]) {
-      amount = parseAmount(match[1]);
-      if (amount) { type = "INCOME"; confidence = "high"; break; }
-    }
+  // Determinar tipo inicial desde el subject (sin necesitar regex de monto)
+  let type: "INCOME" | "EXPENSE" = "EXPENSE";
+  let confidence: "high" | "medium" | "low" = "low";
+  if (SUBJECT_INCOME_KW.some((k) => subjectNorm.includes(k))) {
+    type = "INCOME";
+    confidence = "high";
+  } else if (SUBJECT_EXPENSE_KW.some((k) => subjectNorm.includes(k))) {
+    type = "EXPENSE";
+    confidence = "high";
   }
 
-  if (!amount) {
-    for (const { re, currency: patternCurrency } of EXPENSE_PATTERNS) {
-      const match = text.match(re);
+  // Extraer monto (siempre necesario independiente del fast path)
+  // Si el subject ya fijó tipo INCOME, solo buscar monto; no cambiar el tipo
+  if (type === "INCOME") {
+    for (const pattern of INCOME_PATTERNS) {
+      const match = text.match(pattern);
       if (match?.[1]) {
         amount = parseAmount(match[1]);
-        if (amount) {
-          type = "EXPENSE";
-          confidence = "high";
-          matchedCurrency = patternCurrency;
-          break;
+        if (amount) break;
+      }
+    }
+    // Fallback genérico para INCOME si los patrones específicos no matchearon
+    if (!amount) {
+      const genericMatch = text.match(/(?:\$|CLP)\s*([\d.,]+)/);
+      if (genericMatch?.[1]) amount = parseAmount(genericMatch[1]);
+    }
+  } else {
+    // Tipo EXPENSE o aún sin determinar — probar patrones INCOME primero
+    if (confidence === "low") {
+      for (const pattern of INCOME_PATTERNS) {
+        const match = text.match(pattern);
+        if (match?.[1]) {
+          amount = parseAmount(match[1]);
+          if (amount) { type = "INCOME"; confidence = "high"; break; }
         }
       }
     }
-  }
-
-  // Si no encontramos monto con los patrones tipados, buscar cualquier monto en el texto
-  if (!amount) {
-    const genericMatch = text.match(/(?:\$|CLP|USD)\s*([\d.,]+)/);
-    if (genericMatch?.[1]) {
-      amount = parseAmount(genericMatch[1]);
-      confidence = "low";
-      // Inferir tipo por palabras clave
-      if (/(recib|abon|ingres|dep[oó]sito)/i.test(normalizedText)) {
-        type = "INCOME";
+    // Luego patrones EXPENSE
+    if (!amount) {
+      for (const { re, currency: patternCurrency } of EXPENSE_PATTERNS) {
+        const match = text.match(re);
+        if (match?.[1]) {
+          amount = parseAmount(match[1]);
+          if (amount) {
+            type = "EXPENSE";
+            confidence = "high";
+            matchedCurrency = patternCurrency;
+            break;
+          }
+        }
+      }
+    }
+    // Fallback genérico
+    if (!amount) {
+      const genericMatch = text.match(/(?:\$|CLP|USD)\s*([\d.,]+)/);
+      if (genericMatch?.[1]) {
+        amount = parseAmount(genericMatch[1]);
+        confidence = "low";
+        if (/(recib|abon|ingres|dep[oó]sito)/i.test(normalizedText)) {
+          type = "INCOME";
+        }
       }
     }
   }
@@ -156,4 +204,8 @@ export function isBankEmail(from: string): boolean {
   return BANK_SENDERS.some((b) => fromLower.includes(b.domain));
 }
 
-export const GMAIL_QUERY = BANK_SENDERS.map((b) => `from:${b.domain}`).join(" OR ");
+// Query con keyword parcial — Gmail soporta matching parcial en from:
+// Esto captura cualquier remitente cuya dirección contenga alguno de estos términos
+export const GMAIL_QUERY =
+  "from:(bancochile OR banco OR bci OR santander OR falabella OR estado OR " +
+  "scotiabank OR itau OR security OR tenpo OR ripley OR coopeuch OR binance OR btgpactual)";
