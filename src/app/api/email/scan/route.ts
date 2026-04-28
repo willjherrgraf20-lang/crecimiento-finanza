@@ -23,6 +23,12 @@ export async function GET() {
   try {
     const session = await requireAuth();
     const { db } = await import("@/lib/db");
+
+    const gmailToken = await db.gmailToken.findUnique({ where: { userId: session.userId } });
+    if (!gmailToken) {
+      return NextResponse.json({ error: "Gmail no conectado" }, { status: 400 });
+    }
+
     const emails = await db.emailTransaction.findMany({
       where: { userId: session.userId, status: "PENDING" },
       orderBy: { receivedAt: "desc" },

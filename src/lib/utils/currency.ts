@@ -1,8 +1,14 @@
+const ISO_CURRENCIES = new Set(["CLP", "USD", "EUR", "GBP", "BRL", "MXN", "ARS", "UYU", "PEN", "COP"]);
+
 export function formatCurrency(
   amount: number,
   currency = "CLP",
   locale = "es-CL"
 ): string {
+  if (!ISO_CURRENCIES.has(currency)) {
+    const decimals = 2;
+    return `${amount.toFixed(decimals)} ${currency}`;
+  }
   return new Intl.NumberFormat(locale, {
     style: "currency",
     currency,
