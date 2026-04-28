@@ -84,18 +84,40 @@ export async function isGmailConnected(userId: string): Promise<boolean> {
 // ─── Email scanning ───────────────────────────────────────────────────────────
 
 export async function scanBankEmails(userId: string): Promise<{ scanned: number; newPending: number; skipped: number }> {
-  const accessToken = await getValidAccessToken(userId);
+  let accessToken = await getValidAccessToken(userId);
 
-  // Buscar emails bancarios (últimos 30 días)
-  const after = Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60;
+  // Buscar emails bancarios (últimos 90 días)
+  const after = Math.floor(Date.now() / 1000) - 90 * 24 * 60 * 60;
   const q = encodeURIComponent(`(${GMAIL_QUERY}) after:${after}`);
   const listUrl = `${GMAIL_API}/messages?q=${q}&maxResults=50`;
 
-  const listRes = await fetch(listUrl, {
+  let listRes = await fetch(listUrl, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 
-  if (!listRes.ok) throw new Error("Error fetching Gmail messages list");
+  // Si el token expiró (401), forzar refresh y reintentar una vez
+  if (listRes.status === 401) {
+    const token = await db.gmailToken.findUnique({ where: { userId } });
+    if (!token) throw new Error("Gmail no conectado. Ve a /email/conectar");
+    const refreshToken = decrypt(token.refreshToken);
+    const refreshed = await refreshAccessToken(refreshToken);
+    await db.gmailToken.update({
+      where: { userId },
+      data: {
+        accessToken: encrypt(refreshed.access_token),
+        expiresAt: new Date(Date.now() + refreshed.expires_in * 1000),
+      },
+    });
+    accessToken = refreshed.access_token;
+    listRes = await fetch(listUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  if (!listRes.ok) {
+    const errBody = await listRes.text().catch(() => "(no body)");
+    throw new Error(`Error fetching Gmail messages list: HTTP ${listRes.status} — ${errBody}`);
+  }
 
   const listData = await listRes.json() as { messages?: { id: string }[] };
   const messages = listData.messages ?? [];
