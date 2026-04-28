@@ -9,6 +9,8 @@ const PUBLIC_PATHS = [
   "/api/auth/register",
   "/api/email/callback",
   "/api/cron/keep-alive",
+  "/api/telegram/webhook",
+  "/api/telegram/setup",
 ];
 
 export async function middleware(req: NextRequest) {
