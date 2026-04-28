@@ -14,8 +14,9 @@ export async function POST() {
     if (error instanceof Error && error.message.startsWith("Gmail no conectado")) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
-    console.error(error);
-    return NextResponse.json({ error: "Error del servidor" }, { status: 500 });
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error("[scan POST] Error:", msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
 

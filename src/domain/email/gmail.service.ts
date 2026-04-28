@@ -86,17 +86,24 @@ export async function isGmailConnected(userId: string): Promise<boolean> {
 export async function scanBankEmails(userId: string): Promise<{ scanned: number; newPending: number; skipped: number }> {
   let accessToken = await getValidAccessToken(userId);
 
-  // Buscar emails bancarios (últimos 90 días)
-  const after = Math.floor(Date.now() / 1000) - 90 * 24 * 60 * 60;
-  const q = encodeURIComponent(`(${GMAIL_QUERY}) after:${after}`);
+  // Buscar emails bancarios (últimos 90 días) — Gmail usa formato YYYY/MM/DD para after:
+  const afterDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+  const afterStr = `${afterDate.getFullYear()}/${String(afterDate.getMonth() + 1).padStart(2, "0")}/${String(afterDate.getDate()).padStart(2, "0")}`;
+  const rawQuery = `${GMAIL_QUERY} after:${afterStr}`;
+  const q = encodeURIComponent(rawQuery);
   const listUrl = `${GMAIL_API}/messages?q=${q}&maxResults=50`;
+
+  console.log("[Email scan] Gmail query:", rawQuery);
 
   let listRes = await fetch(listUrl, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 
+  console.log("[Email scan] Gmail list status:", listRes.status);
+
   // Si el token expiró (401), forzar refresh y reintentar una vez
   if (listRes.status === 401) {
+    console.log("[Email scan] Token expirado, refrescando...");
     const token = await db.gmailToken.findUnique({ where: { userId } });
     if (!token) throw new Error("Gmail no conectado. Ve a /email/conectar");
     const refreshToken = decrypt(token.refreshToken);
@@ -112,10 +119,12 @@ export async function scanBankEmails(userId: string): Promise<{ scanned: number;
     listRes = await fetch(listUrl, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
+    console.log("[Email scan] Retry status:", listRes.status);
   }
 
   if (!listRes.ok) {
     const errBody = await listRes.text().catch(() => "(no body)");
+    console.error(`[Email scan] Gmail error HTTP ${listRes.status}:`, errBody);
     throw new Error(`Error fetching Gmail messages list: HTTP ${listRes.status} — ${errBody}`);
   }
 
