@@ -36,7 +36,6 @@ export default function EmailPage() {
       ]);
 
       if (emailsRes.status === 400) {
-        // Gmail no conectado
         setGmailConnected(false);
         setLoading(false);
         return;
@@ -56,7 +55,6 @@ export default function EmailPage() {
   }, []);
 
   useEffect(() => {
-    // Check if redirected from OAuth success
     const params = new URLSearchParams(window.location.search);
     if (params.get("connected") === "1") {
       window.history.replaceState({}, "", "/email");
@@ -84,15 +82,32 @@ export default function EmailPage() {
 
   if (loading) {
     return (
-      <div className="flex h-64 items-center justify-center">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--color-accent)] border-t-transparent" />
+      <div className="flex h-full items-center justify-center">
+        <div className="h-7 w-7 animate-spin rounded-full border-2 border-[var(--color-accent)] border-t-transparent" />
       </div>
     );
   }
 
+  /* ── No conectado: pantalla completa de onboarding ── */
+  if (gmailConnected === false) {
+    return (
+      <div className="flex min-h-full flex-col">
+        <div className="border-b border-[var(--color-border)] px-6 py-4">
+          <h1 className="text-xl font-bold text-[var(--color-text-primary)]">Email Bancario</h1>
+          <p className="mt-0.5 text-sm text-[var(--color-text-secondary)]">
+            Detecta transacciones automáticamente desde tus correos
+          </p>
+        </div>
+        <div className="flex flex-1 items-start justify-center px-6 pt-8 pb-12">
+          <ConnectGmailBanner />
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Conectado ── */
   return (
-    <div className="space-y-6">
-      {/* Header */}
+    <div className="space-y-6 p-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-[var(--color-text-primary)]">Email Bancario</h1>
@@ -100,30 +115,23 @@ export default function EmailPage() {
             Transacciones detectadas en tus correos
           </p>
         </div>
-        {gmailConnected && (
-          <button
-            onClick={scanEmails}
-            disabled={scanning}
-            className="flex items-center gap-2 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border)] px-4 py-2 text-sm font-medium text-[var(--color-text-primary)] transition-colors hover:border-[var(--color-accent)] disabled:opacity-50"
-          >
-            <RefreshCw className={`h-4 w-4 ${scanning ? "animate-spin" : ""}`} />
-            {scanning ? "Escaneando…" : "Escanear emails"}
-          </button>
-        )}
+        <button
+          onClick={scanEmails}
+          disabled={scanning}
+          className="flex items-center gap-2 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border)] px-4 py-2 text-sm font-medium text-[var(--color-text-primary)] transition-colors hover:border-[var(--color-accent)] disabled:opacity-50"
+        >
+          <RefreshCw className={`h-4 w-4 ${scanning ? "animate-spin" : ""}`} />
+          {scanning ? "Escaneando…" : "Escanear emails"}
+        </button>
       </div>
 
-      {/* Scan result toast */}
       {scanResult && (
         <div className="rounded-lg border border-[var(--color-gain-subtle)] bg-[var(--color-gain-subtle)]/40 px-4 py-3 text-sm text-[var(--color-gain)]">
           Escaneados: {scanResult.scanned} | Nuevos pendientes: {scanResult.newPending}
         </div>
       )}
 
-      {/* Not connected */}
-      {!gmailConnected && <ConnectGmailBanner />}
-
-      {/* Connected but empty */}
-      {gmailConnected && emails.length === 0 && (
+      {emails.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-surface)] py-16 text-center">
           <Inbox className="h-10 w-10 text-[var(--color-text-secondary)]" />
           <p className="mt-3 text-sm font-medium text-[var(--color-text-primary)]">Sin emails pendientes</p>
@@ -131,12 +139,11 @@ export default function EmailPage() {
             Haz clic en &quot;Escanear emails&quot; para buscar nuevas transacciones.
           </p>
         </div>
-      )}
-
-      {/* Email list */}
-      {gmailConnected && emails.length > 0 && (
+      ) : (
         <div className="space-y-3">
-          <p className="text-xs text-[var(--color-text-secondary)]">{emails.length} pendiente{emails.length !== 1 ? "s" : ""}</p>
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            {emails.length} pendiente{emails.length !== 1 ? "s" : ""}
+          </p>
           {emails.map((tx) => (
             <EmailPreviewCard
               key={tx.id}
