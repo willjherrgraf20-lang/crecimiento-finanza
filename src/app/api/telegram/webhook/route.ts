@@ -38,20 +38,28 @@ async function handlePhoto(
   fileId: string,
   caption?: string
 ): Promise<void> {
-  await sendMessage(chatId, "⏳ <b>Procesando el comprobante...</b> Dame un momento.");
+  await sendMessage(chatId, "⏳ <b>Procesando el documento...</b> Dame un momento.");
+
+  console.log(`[Webhook] handlePhoto iniciado. chatId=${chatId} userId=${userId} fileId=${fileId}`);
 
   const imageData = await downloadFileAsBase64(fileId);
   if (!imageData) {
+    console.error(`[Webhook] downloadFileAsBase64 falló para fileId=${fileId}`);
     await sendMessage(chatId, "❌ No pude descargar la imagen. Intenta nuevamente.");
     return;
   }
 
+  console.log(`[Webhook] Imagen descargada. mimeType=${imageData.mimeType} base64Length=${imageData.base64.length}`);
+
   const extracted = await extractTransactionFromImage(imageData.base64, imageData.mimeType);
+
+  console.log(`[Webhook] extractTransactionFromImage resultado:`, JSON.stringify(extracted));
+
   if (!extracted) {
     await sendMessage(
       chatId,
-      "❌ <b>No pude reconocer un comprobante válido en la imagen.</b>\n\n" +
-      "Asegúrate de enviar una foto clara de un comprobante de transferencia bancaria."
+      "❌ <b>No pude reconocer un documento financiero válido en la imagen.</b>\n\n" +
+      "Puedes enviar:\n• Foto de un comprobante de transferencia\n• Estado de cuenta de tarjeta de crédito"
     );
     return;
   }
@@ -85,12 +93,18 @@ async function handlePhoto(
     return;
   }
 
+  const docLabel = extracted.documentType === "statement"
+    ? "Estado de cuenta detectado"
+    : "Comprobante detectado";
+
+  const dateLabel = extracted.documentType === "statement" ? "Vencimiento" : "Fecha";
+
   const summary =
-    `✅ <b>Comprobante detectado</b>\n\n` +
+    `✅ <b>${docLabel}</b>\n\n` +
     `📊 <b>Tipo:</b> ${typeLabel(extracted.type)}\n` +
     `💵 <b>Monto:</b> ${formatAmount(extracted.amount, extracted.currency)}\n` +
     `📝 <b>Descripción:</b> ${extracted.description}\n` +
-    `📅 <b>Fecha:</b> ${extracted.date.toLocaleDateString("es-CL")}\n` +
+    `📅 <b>${dateLabel}:</b> ${extracted.date.toLocaleDateString("es-CL")}\n` +
     `🎯 <b>Confianza:</b> ${extracted.confidence}\n\n` +
     `¿Desde qué cuenta?`;
 
