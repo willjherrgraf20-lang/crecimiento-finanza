@@ -88,7 +88,7 @@ export default function MetasPage() {
           targetDate: form.targetDate ? new Date(form.targetDate).toISOString() : null,
         }),
       });
-      if (!res.ok) { const d = await res.json(); setError(d.error ?? "Error"); return; }
+      if (!res.ok) { const d = await res.json(); setError(Array.isArray(d.error) ? d.error.map((e: { message: string }) => e.message).join(", ") : (d.error ?? "Error")); return; }
       setShowForm(false);
       await fetchGoals();
     } finally {

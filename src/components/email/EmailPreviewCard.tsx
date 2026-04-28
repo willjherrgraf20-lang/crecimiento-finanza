@@ -65,7 +65,7 @@ export function EmailPreviewCard({ tx, accounts, categories, onConfirmed, onReje
           currency,
         }),
       });
-      if (!res.ok) { const d = await res.json(); setError(d.error ?? "Error"); return; }
+      if (!res.ok) { const d = await res.json(); setError(Array.isArray(d.error) ? d.error.map((e: { message: string }) => e.message).join(", ") : (d.error ?? "Error")); return; }
       onConfirmed(tx.id);
     } catch {
       setError("Error de red");

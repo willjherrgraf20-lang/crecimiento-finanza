@@ -6,7 +6,7 @@ import { z } from "zod";
 const createSchema = z.object({
   name: z.string().min(1),
   amount: z.number().positive(),
-  currency: z.string().length(3).default("CLP"),
+  currency: z.string().min(2).max(10).default("CLP"),
   type: z.enum(["EXPENSE", "INCOME"]).default("EXPENSE"),
   categoryId: z.string().uuid().optional().nullable(),
   accountId: z.string().uuid(),

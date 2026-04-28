@@ -132,7 +132,7 @@ export const createExpenseApiSchema = z.object({
   description: z.string().max(255).optional().nullable(),
   date: z.string().datetime(),
   notes: z.string().max(1000).optional().nullable(),
-  currency: z.string().length(3).default("CLP"),
+  currency: z.string().min(2).max(10).default("CLP"),
 });
 
 export const updateExpenseApiSchema = createExpenseApiSchema

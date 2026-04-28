@@ -6,7 +6,7 @@ import { z } from "zod";
 const updateSchema = z.object({
   name: z.string().min(1).optional(),
   amount: z.number().positive().optional(),
-  currency: z.string().length(3).optional(),
+  currency: z.string().min(2).max(10).optional(),
   frequency: z.enum(["DAILY", "WEEKLY", "BIWEEKLY", "MONTHLY", "YEARLY"]).optional(),
   nextDueDate: z.string().datetime().optional(),
   isActive: z.boolean().optional(),

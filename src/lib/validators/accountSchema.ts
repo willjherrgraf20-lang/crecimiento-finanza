@@ -3,7 +3,7 @@ import { z } from "zod";
 export const createAccountSchema = z.object({
   name: z.string().min(1).max(100),
   type: z.enum(["CHECKING", "SAVINGS", "CREDIT_CARD", "CASH", "BROKER", "WALLET"]),
-  currency: z.string().length(3).default("CLP"),
+  currency: z.string().min(2).max(10).default("CLP"),
   initialBalance: z.number().default(0),
   color: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional().nullable(),
 });
