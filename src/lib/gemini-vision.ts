@@ -68,7 +68,8 @@ export async function extractTransactionFromImage(
       confidence: parsed.confidence ?? "medium",
     };
   } catch (error) {
-    console.error("[Gemini Vision] Error al procesar imagen:", error);
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error("[Gemini Vision] Error al procesar imagen:", msg);
     return null;
   }
 }

@@ -137,11 +137,12 @@ export async function downloadFileAsBase64(fileId: string): Promise<{ base64: st
   const res = await fetch(url);
   if (!res.ok) return null;
 
-  const contentType = res.headers.get("content-type") ?? "image/jpeg";
+  const rawContentType = res.headers.get("content-type") ?? "image/jpeg";
+  const mimeType = rawContentType.split(";")[0].trim();
   const buffer = await res.arrayBuffer();
   const base64 = Buffer.from(buffer).toString("base64");
 
-  return { base64, mimeType: contentType };
+  return { base64, mimeType };
 }
 
 // ─── Configurar webhook ───────────────────────────────────────────────────────
