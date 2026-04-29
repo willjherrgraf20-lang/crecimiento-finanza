@@ -15,6 +15,7 @@ import {
   RefreshCw,
   LogOut,
   Send,
+  Settings,
 } from "lucide-react";
 import { clsx } from "clsx";
 
@@ -30,6 +31,7 @@ const NAV_ITEMS = [
   { href: "/telegram",      icon: Send,             label: "Bot Telegram" },
   { href: "/reportes",      icon: BarChart2,        label: "Reportes" },
   { href: "/recurrentes",   icon: RefreshCw,        label: "Recurrentes" },
+  { href: "/configuracion", icon: Settings,         label: "Configuración" },
 ];
 
 async function handleLogout() {
