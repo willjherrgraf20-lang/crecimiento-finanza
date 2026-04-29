@@ -42,15 +42,12 @@ Reemplazo de **Banco_Odin** (proyecto anterior), que tenía dos problemas críti
 
 ### Fase 2 — Core Financiero
 
-- **Domain services** (copiados y adaptados de Banco_Odin):
+- **Domain services**:
   - `expense.service.ts` — CRUD de gastos/ingresos
   - `account.service.ts` — CRUD de cuentas (CLP, USD, USDT)
   - `categorization.ts` — reglas de auto-categorización chilenas
   - `metrics.ts` — KPIs mensuales (ingresos, gastos, ahorro neto, tasa de ahorro)
-  - `budgeting.ts` — presupuestos y progreso por categoría
-  - `reports.service.ts` — reportes históricos y exportación CSV
-  - `sync.service.ts` — sincronización de datos
-- **APIs REST**: `/api/transacciones`, `/api/cuentas`, `/api/categorias`, `/api/presupuesto`, `/api/metas`, `/api/recurrentes`
+- **APIs REST**: `/api/transacciones`, `/api/cuentas`, `/api/categorias`, `/api/presupuesto`, `/api/metas`, `/api/recurrentes`, `/api/reportes`
 - **Páginas dashboard**:
   - `/dashboard` — KPIs del mes + cashflow area chart + pie de gastos + net worth
   - `/transacciones` — lista filtrable con búsqueda y nueva transacción
@@ -63,8 +60,8 @@ Reemplazo de **Banco_Odin** (proyecto anterior), que tenía dos problemas críti
 
 ### Fase 3 — Inversiones ETF + Cripto
 
-- **Market data**: integración Binance API (cripto) + Yahoo Finance (ETF/acciones)
-- **Domain services**: `portfolio.service.ts`, `investments.service.ts`, `pricing.ts`
+- **Market data**: integración Binance API (cripto) + Yahoo Finance (ETF/acciones) en `lib/integrations/marketData.ts`
+- **Domain services**: `portfolio.service.ts`, `holding.entity.ts`, `pricing.ts`
 - **APIs**: `/api/inversiones/holdings`, `/api/inversiones/portafolio`, `/api/inversiones/trades`, `/api/sync-prices`
 - **Páginas**:
   - `/inversiones` — portfolio overview con PnL total + AreaChart gradiente dinámico
@@ -85,9 +82,9 @@ Reemplazo de **Banco_Odin** (proyecto anterior), que tenía dos problemas críti
   - `/email` — bandeja de emails pendientes con `EmailPreviewCard` (editable antes de confirmar)
   - `/email/conectar` — página para conectar cuenta Gmail vía OAuth2
 
-### Schema Prisma (14 modelos)
+### Schema Prisma (15 modelos)
 
-`User`, `Account`, `Transaction`, `Category`, `Budget`, `Goal`, `RecurringTransaction`, `Investment`, `InvestmentTrade`, `PriceCache`, `BankImport`, `GmailToken`, `EmailTransaction`, `SyncLog`
+`User`, `Account`, `Category`, `Expense`, `Budget`, `SavingsGoal`, `Asset`, `Holding`, `InvestmentTransaction`, `AssetPrice`, `RecurringExpense`, `SyncJob`, `GmailToken`, `EmailTransaction`, `TelegramTransaction`
 
 ---
 
@@ -103,6 +100,8 @@ Reemplazo de **Banco_Odin** (proyecto anterior), que tenía dos problemas críti
 | `GOOGLE_CLIENT_ID` | OAuth2 app de Google Cloud |
 | `GOOGLE_CLIENT_SECRET` | OAuth2 secret |
 | `GOOGLE_REDIRECT_URI` | `https://crecimiento-finanza.vercel.app/api/email/callback` |
+| `TELEGRAM_BOT_TOKEN` | Token del bot @OFinanzaBot |
+| `GEMINI_API_KEY` | API key de Google Gemini (vision OCR de comprobantes) |
 
 ---
 
@@ -153,25 +152,76 @@ Reemplazo de **Banco_Odin** (proyecto anterior), que tenía dos problemas críti
 - [x] Gmail integration (OAuth2 + parser bancos chilenos)
 - [x] Deploy Vercel + Supabase estable
 - [x] Bot Telegram (@OFinanzaBot) — procesa comprobantes con Gemini Vision
-- [ ] Configurar Google OAuth2 en Google Cloud Console (pendiente — necesita credenciales reales para activar `/email`)
-- [ ] Configurar webhook Telegram en producción (POST /api/telegram/setup con URL de Vercel)
+- [x] Google OAuth2 + Gmail API habilitados en Google Cloud Console
+- [x] Webhook Telegram registrado en producción
+- [x] Página de configuración (cambio de contraseña, gestionar Gmail conectado)
+- [x] Extracción estructurada de comprobantes con metadata (RUT, cuentas, ID transacción) + idempotencia por `transaction_id`
+- [x] Auto-asociación de vouchers a cuenta del usuario por `account_number`
 
 ---
 
 ## Fase 5 — Bot de Telegram
 
 - **Bot**: @OFinanzaBot (`FinanzaOdin`) — Token configurado en `TELEGRAM_BOT_TOKEN`
-- **IA**: Gemini 1.5 Flash (`GEMINI_API_KEY`) — extrae monto, tipo, descripción y fecha del comprobante
+- **IA**: Google Gemini 2.0 Flash (`GEMINI_API_KEY`) — vision OCR de comprobantes con `responseMimeType: application/json`
 - **Flujo**: foto → Gemini OCR → TelegramTransaction PENDING → botones inline (cuenta → categoría → confirmar) → Expense creado
-- **Nuevos archivos**:
+- **Archivos**:
   - `src/lib/telegram.ts` — helper Telegram Bot API (sendMessage, inline keyboards, descargar archivos)
-  - `src/lib/gemini-vision.ts` — OCR de comprobantes bancarios con Gemini 1.5 Flash
-  - `src/app/api/telegram/webhook/route.ts` — webhook principal del bot (flujo completo multi-paso)
+  - `src/lib/gemini-vision.ts` — OCR estructurado: monto, tipo, fecha, RUT, cuentas, banco destino, ID transacción, confianza
+  - `src/app/api/telegram/webhook/route.ts` — webhook principal con flujo multi-paso y auto-match de cuenta
   - `src/app/api/telegram/link/route.ts` — genera/revoca token de vinculación cuenta web ↔ Telegram
   - `src/app/api/telegram/setup/route.ts` — registra/elimina webhook en Telegram API
   - `src/app/api/telegram/transactions/route.ts` — historial de TelegramTransactions del usuario
   - `src/app/(dashboard)/telegram/page.tsx` — página de vinculación e historial en el dashboard
-- **Nuevos modelos Prisma**: `TelegramTransaction` + campos `telegramChatId`, `telegramLinkToken` en `User`
-- **Variables de entorno**: `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`
-- **Para activar en producción**: `POST /api/telegram/setup` con `{ webhookUrl: "https://crecimiento-finanza.vercel.app" }` (Authorization: Bearer CRON_SECRET)
+- **Modelo Prisma `TelegramTransaction`** + campos `telegramChatId`, `telegramLinkToken` en `User`
+
+---
+
+## Fase 6 — Extracción estructurada y configuración
+
+### Metadata estructurada de comprobantes
+
+- Prompt de Gemini reescrito a JSON anidado con 16 campos: `monto`, `descripcion`, `fecha_movimiento`, `nombre_origen/destinatario`, `rut_origen/destinatario`, `cuenta_origen/abono`, `banco_destino`, `id_transaccion`, `fecha_hora_comprobante`, `confianza`
+- Reglas explícitas para variantes de bancos chilenos (BCI: "Pagado a"/"Cuenta destino"; Banco de Chile: "Traspaso a/de"/"Movimiento Exitoso"; etc.)
+- Regla crítica: **NUNCA inventar datos** — campos no detectados quedan `null`/`""`. La fecha y descripción ya no se completan con plantillas
+- Migraciones Prisma:
+  - `expenses` + `telegram_transactions`: `transaction_id`, `counterparty_name/rut/account/bank`, `owner_account`
+  - Índice unique `(user_id, transaction_id)` en `expenses` para idempotencia
+  - `accounts.account_number` para auto-asociación
+
+### Idempotencia
+
+- Antes de crear PENDING, el bot verifica `Expense` con mismo `(userId, transactionId)` → avisa "Ya fue registrado el [fecha]"
+- También verifica `TelegramTransaction` PENDING en curso → "Ya estás procesando este comprobante"
+
+### Auto-asociación de cuenta
+
+- Si el voucher trae `cuenta_origen` (EXPENSE) o `cuenta_abono` (INCOME) que matchea con el `accountNumber` de alguna cuenta del usuario, el bot **salta la pregunta de cuenta** y va directo a categoría
+- Match tolerante a ceros a la izquierda (`001696993900` ≡ `1696993900`)
+
+### Pantalla de revisión cuando faltan datos
+
+- `getMissingFields()` evalúa según `documentType` + `type` qué campos esperar
+- Si falta cualquiera, el bot muestra:
+  - Lo que sí pudo leer (con "*no detectado*" en cursiva en lo que falta)
+  - Lista explícita "No detecté: ..."
+  - Botones: "Continuar de todos modos" / "Cancelar y reenviar foto"
+- Si **falta el monto** (campo crítico), solo se ofrece reenviar — sin monto no se puede crear el `Expense`
+
+### Página de configuración (`/configuracion`)
+
+- Cambio de contraseña: valida la actual con bcrypt, exige mín. 8 caracteres y que sea distinta
+- Gestión de Gmail: muestra el email asociado (consultando `users.getProfile`), botón "Desvincular" (borra `GmailToken`), botón "Conectar otra cuenta" (el callback hace upsert)
+
+### Email scanner mejorado
+
+- `format=full` en lugar de `format=metadata` → parser ve el body completo en lugar del snippet de ~100 chars
+- `extractBodyText()`: walker recursivo de partes MIME, prefiere `text/plain`, fallback `text/html` con strip de tags
+- Diagnóstico desglosado en la respuesta: `skippedExists`, `skippedNotBank`, `skippedNoParse`
+- Khipu agregado a `BANK_SENDERS` y `GMAIL_QUERY` (matching parcial cubre `serviciostransferencias@bancochile.cl`)
+- Query Gmail con formato `after:YYYY/MM/DD` (antes timestamp Unix → 400 Bad Request)
+
+### Limpieza
+
+- Eliminado `src/lib/finance/budgeting.ts` (código muerto, sin imports)
 
