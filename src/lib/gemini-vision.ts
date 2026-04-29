@@ -16,6 +16,9 @@ export interface ExtractedTransaction {
   counterpartyRut?: string | null;
   counterpartyAccount?: string | null;
   counterpartyBank?: string | null;
+  // Cuenta DEL TITULAR del comprobante (para auto-asociar al Account del usuario)
+  // EXPENSE: cuenta_origen (donde sale la plata) | INCOME: cuenta_abono (donde llega)
+  ownerAccount?: string | null;
 }
 
 const EXTRACTION_PROMPT = `Eres un experto en procesamiento de documentos financieros chilenos y OCR. Analiza la imagen del comprobante adjunta y extrae la información estructurada con la mayor precisión posible.
@@ -187,6 +190,8 @@ function mapTransaccionToExtracted(t: RawTransaccion): ExtractedTransaction | nu
     counterpartyRut: type === "INCOME" ? (t.rut_origen ?? null) : (t.rut_destinatario ?? null),
     counterpartyAccount: type === "INCOME" ? (t.cuenta_origen ?? null) : (t.cuenta_abono ?? null),
     counterpartyBank: t.banco_destino ?? null,
+    // Cuenta del titular: lo opuesto al counterpartyAccount
+    ownerAccount: type === "INCOME" ? (t.cuenta_abono ?? null) : (t.cuenta_origen ?? null),
   };
 }
 

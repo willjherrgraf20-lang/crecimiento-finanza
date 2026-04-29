@@ -10,6 +10,7 @@ interface Account {
   type: string;
   currency: string;
   initialBalance: string;
+  accountNumber?: string | null;
   balance?: number;
 }
 
@@ -23,8 +24,8 @@ const TYPE_LABELS: Record<string, string> = {
   WALLET: "Billetera cripto",
 };
 
-interface FormState { name: string; type: string; currency: string; initialBalance: string; }
-const defaultForm = (): FormState => ({ name: "", type: "CHECKING", currency: "CLP", initialBalance: "0" });
+interface FormState { name: string; type: string; currency: string; initialBalance: string; accountNumber: string; }
+const defaultForm = (): FormState => ({ name: "", type: "CHECKING", currency: "CLP", initialBalance: "0", accountNumber: "" });
 
 export default function CuentasPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -55,7 +56,13 @@ export default function CuentasPage() {
 
   function openEdit(acc: Account) {
     setEditId(acc.id);
-    setForm({ name: acc.name, type: acc.type, currency: acc.currency, initialBalance: acc.initialBalance });
+    setForm({
+      name: acc.name,
+      type: acc.type,
+      currency: acc.currency,
+      initialBalance: acc.initialBalance,
+      accountNumber: acc.accountNumber ?? "",
+    });
     setError("");
     setShowForm(true);
   }
@@ -71,7 +78,11 @@ export default function CuentasPage() {
       const res = await fetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, initialBalance: parseFloat(form.initialBalance) }),
+        body: JSON.stringify({
+          ...form,
+          initialBalance: parseFloat(form.initialBalance),
+          accountNumber: form.accountNumber.trim() || null,
+        }),
       });
       if (!res.ok) { const d = await res.json(); setError(Array.isArray(d.error) ? d.error.map((e: { message: string }) => e.message).join(", ") : (d.error ?? "Error")); return; }
       setShowForm(false);
@@ -144,6 +155,21 @@ export default function CuentasPage() {
               <input type="number" value={form.initialBalance} onChange={(e) => setForm((f) => ({ ...f, initialBalance: e.target.value }))}
                 className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-elevated)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]" />
             </div>
+            <div className="col-span-2">
+              <label className="block mb-1 text-xs text-[var(--color-text-secondary)]">
+                Número de cuenta <span className="text-[var(--color-text-muted)]">(opcional)</span>
+              </label>
+              <input
+                type="text"
+                value={form.accountNumber}
+                onChange={(e) => setForm((f) => ({ ...f, accountNumber: e.target.value }))}
+                placeholder="Ej: 001696993900"
+                className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-elevated)] px-3 py-2 text-sm font-mono text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]"
+              />
+              <p className="mt-1 text-[11px] text-[var(--color-text-muted)]">
+                Permite asociar automáticamente comprobantes a esta cuenta cuando coincide con el origen o abono del voucher.
+              </p>
+            </div>
           </div>
           {error && <p className="text-xs text-[var(--color-loss)]">{error}</p>}
           <div className="flex justify-end gap-2">
@@ -185,6 +211,11 @@ export default function CuentasPage() {
               <p className="text-xl font-bold tabular-nums text-[var(--color-text-primary)]">
                 {formatCurrency(parseFloat(acc.initialBalance), acc.currency)}
               </p>
+              {acc.accountNumber && (
+                <p className="text-[11px] font-mono text-[var(--color-text-muted)] truncate">
+                  N° {acc.accountNumber}
+                </p>
+              )}
               <div className="flex justify-end gap-1">
                 <button onClick={() => openEdit(acc)}
                   className="rounded p-1.5 text-[var(--color-text-secondary)] hover:text-[var(--color-accent)] transition-colors">

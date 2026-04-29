@@ -61,6 +61,7 @@ model Account {
   currency       String      // "CLP", "USD", "USDT", etc.
   initialBalance Decimal     @default(0) @db.Decimal(18, 2) @map("initial_balance")
   color          String?
+  accountNumber  String?     @map("account_number") // Para auto-asociar vouchers/comprobantes
   createdAt      DateTime    @default(now()) @map("created_at")
   updatedAt      DateTime    @updatedAt @map("updated_at")
 
@@ -413,6 +414,7 @@ model TelegramTransaction {
   counterpartyRut     String? @map("counterparty_rut")
   counterpartyAccount String? @map("counterparty_account")
   counterpartyBank    String? @map("counterparty_bank")
+  ownerAccount        String? @map("owner_account")
   expenseId      String?       @db.Uuid @map("expense_id")
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")

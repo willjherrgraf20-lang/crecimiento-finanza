@@ -6,6 +6,7 @@ export const createAccountSchema = z.object({
   currency: z.string().min(2).max(10).default("CLP"),
   initialBalance: z.number().default(0),
   color: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional().nullable(),
+  accountNumber: z.string().trim().max(50).optional().nullable(),
 });
 
 export const updateAccountSchema = createAccountSchema.partial();

@@ -63,6 +63,27 @@ function getMissingFields(extracted: ExtractedTransaction): string[] {
 }
 
 /**
+ * Normaliza un número de cuenta (quita ceros a la izquierda y caracteres no numéricos)
+ * para comparar tolerantemente "0000000001696993900" con "1696993900".
+ */
+function normalizeAccountNumber(s: string | null | undefined): string {
+  if (!s) return "";
+  return s.replace(/\D/g, "").replace(/^0+/, "");
+}
+
+/**
+ * Busca una cuenta del usuario que matchee el número detectado en el comprobante.
+ */
+async function findMatchingAccount(userId: string, ownerAccount: string | null | undefined) {
+  if (!ownerAccount) return null;
+  const target = normalizeAccountNumber(ownerAccount);
+  if (!target) return null;
+
+  const accounts = await db.account.findMany({ where: { userId } });
+  return accounts.find((acc) => normalizeAccountNumber(acc.accountNumber) === target) ?? null;
+}
+
+/**
  * Muestra los botones de selección de cuenta. Se usa tanto desde el flujo
  * "extracción limpia" como desde el callback "proceed" (continuar pese a faltantes).
  */
@@ -91,6 +112,30 @@ async function askForAccount(
   ]);
 
   await sendInlineKeyboard(chatId, preface, accountButtons);
+}
+
+/**
+ * Muestra los botones para elegir categoría dado un txId + accountId ya resueltos.
+ */
+async function askForCategory(
+  chatId: number,
+  userId: string,
+  txId: string,
+  accountId: string,
+  preface: string
+): Promise<void> {
+  const categories = await db.category.findMany({
+    where: { OR: [{ userId }, { isSystem: true }] },
+    take: 8,
+    orderBy: { name: "asc" },
+  });
+
+  const catButtons: InlineKeyboardButton[][] = categories.map((cat) => [
+    { text: `${cat.icon ?? "📌"} ${cat.name}`, callback_data: `cat:${txId}:${accountId}:${cat.id}` },
+  ]);
+  catButtons.push([{ text: "⏭️ Sin categoría", callback_data: `cat:${txId}:${accountId}:none` }]);
+
+  await sendInlineKeyboard(chatId, preface, catButtons);
 }
 
 // ─── Procesamiento de imágenes/fotos ─────────────────────────────────────────
@@ -160,6 +205,7 @@ async function handlePhoto(
       counterpartyRut: extracted.counterpartyRut ?? null,
       counterpartyAccount: extracted.counterpartyAccount ?? null,
       counterpartyBank: extracted.counterpartyBank ?? null,
+      ownerAccount: extracted.ownerAccount ?? null,
     },
   });
 
@@ -212,7 +258,23 @@ async function handlePhoto(
     return;
   }
 
-  // Extracción limpia → ir directo a elegir cuenta
+  // Extracción limpia → intentar auto-asociar la cuenta por número
+  const matched = await findMatchingAccount(userId, extracted.ownerAccount);
+
+  if (matched) {
+    await askForCategory(
+      chatId,
+      userId,
+      telegramTx.id,
+      matched.id,
+      `✅ <b>${docLabel}</b>\n\n${dataLines}\n\n` +
+      `🎯 Cuenta auto-asociada: <b>${matched.name}</b> (N° ${matched.accountNumber})\n\n` +
+      `¿Qué categoría?`
+    );
+    return;
+  }
+
+  // Sin match → preguntar cuenta como siempre
   await askForAccount(
     chatId,
     userId,
@@ -232,7 +294,7 @@ async function handleCallback(
 ): Promise<void> {
   const parts = data.split(":");
 
-  // ── Paso 0a: usuario quiere continuar pese a faltantes → preguntar cuenta ──
+  // ── Paso 0a: usuario quiere continuar pese a faltantes → auto-match o preguntar cuenta ──
   if (parts[0] === "proceed") {
     const [, txId] = parts;
     const tx = await db.telegramTransaction.findUnique({ where: { id: txId, userId } });
@@ -241,11 +303,19 @@ async function handleCallback(
       return;
     }
     await answerCallbackQuery(queryId, "Continuando…");
-    await editMessageText(
-      chatId,
-      messageId,
-      `✅ Continuando con los datos detectados.\n\n¿Desde qué cuenta?`
-    );
+    await editMessageText(chatId, messageId, `✅ Continuando con los datos detectados.`);
+
+    const matched = await findMatchingAccount(userId, tx.ownerAccount);
+    if (matched) {
+      await askForCategory(
+        chatId,
+        userId,
+        txId,
+        matched.id,
+        `🎯 Cuenta auto-asociada: <b>${matched.name}</b> (N° ${matched.accountNumber})\n\n¿Qué categoría?`
+      );
+      return;
+    }
     await askForAccount(chatId, userId, txId, "Selecciona la cuenta:");
     return;
   }
