@@ -25,6 +25,7 @@ export default function EmailPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState<{ scanned: number; newPending: number } | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
@@ -65,13 +66,18 @@ export default function EmailPage() {
   async function scanEmails() {
     setScanning(true);
     setScanResult(null);
+    setScanError(null);
     try {
       const res = await fetch("/api/email/scan", { method: "POST" });
+      const data = await res.json();
       if (res.ok) {
-        const data = await res.json();
         setScanResult({ scanned: data.scanned, newPending: data.newPending });
         await fetchData();
+      } else {
+        setScanError(data.error ?? `Error ${res.status}`);
       }
+    } catch (e) {
+      setScanError(e instanceof Error ? e.message : "Error desconocido");
     } finally {
       setScanning(false);
     }
@@ -128,6 +134,12 @@ export default function EmailPage() {
       {scanResult && (
         <div className="rounded-lg border border-[var(--color-gain-subtle)] bg-[var(--color-gain-subtle)]/40 px-4 py-3 text-sm text-[var(--color-gain)]">
           Escaneados: {scanResult.scanned} | Nuevos pendientes: {scanResult.newPending}
+        </div>
+      )}
+
+      {scanError && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400 font-mono break-all">
+          {scanError}
         </div>
       )}
 

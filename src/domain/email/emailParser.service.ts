@@ -53,6 +53,8 @@ const BANK_SENDERS = [
   { domain: "bancosecurity.cl", name: "Banco Security" },
   { domain: "security.cl",      name: "Banco Security" },
   { domain: "coopeuch.cl",      name: "Coopeuch" },
+  // Pasarela de pago de servicios (Khipu envía comprobantes de pago)
+  { domain: "khipu.com",        name: "Khipu" },
 ];
 
 function parseAmount(raw: string): number | null {
@@ -206,6 +208,7 @@ export function isBankEmail(from: string): boolean {
 
 // Query con keyword parcial — Gmail soporta matching parcial en from:
 // Esto captura cualquier remitente cuya dirección contenga alguno de estos términos
+// Cubre: serviciostransferencias@bancochile.cl, notificaciones@bci.cl, comprobantes@khipu.com, etc.
 export const GMAIL_QUERY =
   "from:(bancochile OR banco OR bci OR santander OR falabella OR estado OR " +
-  "scotiabank OR itau OR security OR tenpo OR ripley OR coopeuch OR binance OR btgpactual)";
+  "scotiabank OR itau OR security OR tenpo OR ripley OR coopeuch OR binance OR btgpactual OR khipu)";

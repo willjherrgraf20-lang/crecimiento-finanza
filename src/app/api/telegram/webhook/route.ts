@@ -94,10 +94,12 @@ async function handlePhoto(
   }
 
   const docLabel = extracted.documentType === "statement"
-    ? "Estado de cuenta detectado"
-    : "Comprobante detectado";
+      ? "Estado de cuenta detectado"
+      : extracted.documentType === "receipt"
+      ? "Boleta/Factura detectada"
+      : "Comprobante detectado";
 
-  const dateLabel = extracted.documentType === "statement" ? "Vencimiento" : "Fecha";
+    const dateLabel = extracted.documentType === "statement" ? "Vencimiento" : "Fecha";
 
   const summary =
     `✅ <b>${docLabel}</b>\n\n` +
