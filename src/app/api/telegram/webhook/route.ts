@@ -37,6 +37,9 @@ function typeLabel(type: string): string {
 function getMissingFields(extracted: ExtractedTransaction): string[] {
   const missing: string[] = [];
 
+  // Monto — crítico, sin él no se puede registrar el movimiento
+  if (!extracted.amount || extracted.amount <= 0) missing.push("Monto");
+
   // Tipo de documento — siempre debería existir (default voucher)
   if (!extracted.documentType) missing.push("Tipo de documento");
 
@@ -227,10 +230,15 @@ async function handlePhoto(
   const bankLine = extracted.counterpartyBank ? `🏦 <b>Banco:</b> ${extracted.counterpartyBank}` : "";
   const txIdLine = extracted.transactionId ? `🔖 <b>ID:</b> <code>${extracted.transactionId}</code>` : "";
 
+  const amountStr = extracted.amount > 0
+    ? formatAmount(extracted.amount, extracted.currency)
+    : "<i>no detectado</i>";
+  const descStr = extracted.description?.trim() ? extracted.description : "<i>no detectado</i>";
+
   const dataLines =
     `📊 <b>Tipo:</b> ${typeLabel(extracted.type)}\n` +
-    `💵 <b>Monto:</b> ${formatAmount(extracted.amount, extracted.currency)}\n` +
-    `📝 <b>Descripción:</b> ${extracted.description}\n` +
+    `💵 <b>Monto:</b> ${amountStr}\n` +
+    `📝 <b>Descripción:</b> ${descStr}\n` +
     [counterpartyLine, accountLine, bankLine, txIdLine].filter(Boolean).map((l) => l + "\n").join("") +
     `📅 <b>${dateLabel}:</b> ${extracted.date.toLocaleDateString("es-CL")}\n` +
     `🎯 <b>Confianza:</b> ${extracted.confidence}`;
@@ -238,8 +246,11 @@ async function handlePhoto(
   // Verificar campos faltantes / confianza baja
   const missing = getMissingFields(extracted);
   const lowConfidence = extracted.confidence === "low";
+  const hasAmount = extracted.amount > 0;
 
   if (missing.length > 0 || lowConfidence) {
+    const cantContinue = !hasAmount;
+
     const reviewText =
       `⚠️ <b>${docLabel} — datos incompletos</b>\n\n` +
       `Lo que pude leer:\n${dataLines}\n\n` +
@@ -249,12 +260,19 @@ async function handlePhoto(
       (lowConfidence
         ? `🔍 La lectura tiene confianza baja — la imagen puede estar borrosa o cortada.\n\n`
         : "") +
-      `¿Qué quieres hacer?`;
+      (cantContinue
+        ? `❌ <b>Sin monto no puedo registrar el movimiento.</b>\n` +
+          `Reenvía una foto donde se vea claramente el monto.\n\n`
+        : `¿Qué quieres hacer?`);
 
-    await sendInlineKeyboard(chatId, reviewText, [
-      [{ text: "✅ Continuar de todos modos", callback_data: `proceed:${telegramTx.id}` }],
-      [{ text: "🔁 Cancelar y reenviar foto", callback_data: `discard:${telegramTx.id}` }],
-    ]);
+    const buttons: InlineKeyboardButton[][] = cantContinue
+      ? [[{ text: "🔁 Reenviar foto", callback_data: `discard:${telegramTx.id}` }]]
+      : [
+          [{ text: "✅ Continuar de todos modos", callback_data: `proceed:${telegramTx.id}` }],
+          [{ text: "🔁 Cancelar y reenviar foto", callback_data: `discard:${telegramTx.id}` }],
+        ];
+
+    await sendInlineKeyboard(chatId, reviewText, buttons);
     return;
   }
 

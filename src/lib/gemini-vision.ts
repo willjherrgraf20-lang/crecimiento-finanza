@@ -71,6 +71,19 @@ DIFERENCIAR FECHAS:
 - fecha_movimiento = fecha lógica del movimiento (ej. "Fecha movimiento")
 - fecha_hora_comprobante = fecha+hora de emisión al pie (ej. "Fecha y hora")
 
+REGLA CRÍTICA — NUNCA RECHACES UNA IMAGEN:
+- Si ves CUALQUIER monto en pesos junto a un movimiento, es un documento válido.
+- Los screenshots, capturas de pantalla, fotos de la pantalla de otro celular y vouchers compartidos por apps bancarias TAMBIÉN son válidos.
+- Distintos bancos usan distintas etiquetas. Acepta variantes:
+  • "Pagado a", "Traspaso a", "Transferencia a" → destinatario
+  • "Pagado por", "Traspaso de", "Recibido de" → origen
+  • "Cuenta destino", "Cuenta Destinatario", "Cuenta Abono" → cuenta_abono
+  • "Cuenta origen", "Desde la cuenta" → cuenta_origen
+  • "Banco destino", "Banco" + cuenta destino → banco_destino
+  • "Transacción", "Id transaccion", "Nº comprobante" → id_transaccion
+- Si UN campo no se ve, déjalo null. NO inventes.
+- Si la imagen claramente no es financiera (paisaje, selfie, comida): aun así responde el JSON, con monto=0 y confianza="baja". El sistema decidirá qué hacer.
+
 FORMATO DE SALIDA EXACTO (responde SOLO el JSON, sin texto adicional ni bloques de código):
 
 {
@@ -79,8 +92,8 @@ FORMATO DE SALIDA EXACTO (responde SOLO el JSON, sin texto adicional ni bloques 
     "type": "EXPENSE" | "INCOME" | "TRANSFER",
     "currency": "CLP" | "USD" | "USDT",
     "monto": 0,
-    "descripcion": "",
-    "fecha_movimiento": "YYYY-MM-DD",
+    "descripcion": null,
+    "fecha_movimiento": null,
     "nombre_origen": null,
     "rut_origen": null,
     "cuenta_origen": null,
@@ -89,12 +102,10 @@ FORMATO DE SALIDA EXACTO (responde SOLO el JSON, sin texto adicional ni bloques 
     "cuenta_abono": null,
     "banco_destino": null,
     "id_transaccion": null,
-    "fecha_hora_comprobante": "YYYY-MM-DD HH:mm:ss",
+    "fecha_hora_comprobante": null,
     "confianza": "alta" | "media" | "baja"
   }
-}
-
-Si la imagen NO contiene información financiera (paisaje, selfie, captura cualquiera): {"error": "No es un documento financiero válido"}.`;
+}`;
 
 /**
  * Strips markdown code fences from a string that may wrap JSON.
@@ -149,9 +160,11 @@ function parseDate(fechaMovimiento?: string, fechaHoraCompr?: string): Date {
   return new Date();
 }
 
-function mapTransaccionToExtracted(t: RawTransaccion): ExtractedTransaction | null {
-  const amount = parseAmount(t.monto);
-  if (isNaN(amount) || amount <= 0) return null;
+function mapTransaccionToExtracted(t: RawTransaccion): ExtractedTransaction {
+  const rawAmount = parseAmount(t.monto);
+  // Si no hay monto, mantenerlo en 0 para que el flujo de "datos faltantes"
+  // lo capture y pida al usuario reenviar/cancelar.
+  const amount = isNaN(rawAmount) || rawAmount < 0 ? 0 : rawAmount;
 
   const docType = String(t.documentType ?? "voucher");
   const documentType: "voucher" | "statement" | "receipt" =
@@ -231,21 +244,22 @@ export async function extractTransactionFromImage(
       return null;
     }
 
-    if (parsed.error) {
-      console.log("[Gemini Vision] Gemini rechazó la imagen:", parsed.error);
-      return null;
-    }
-
-    if (!parsed.transaccion) {
-      console.error("[Gemini Vision] Respuesta sin campo 'transaccion':", jsonText.slice(0, 500));
-      return null;
+    // Si Gemini igual respondió error a pesar del prompt, generar struct vacío
+    // para que el flujo de "datos faltantes" guíe al usuario
+    if (parsed.error || !parsed.transaccion) {
+      console.warn("[Gemini Vision] Sin transaccion en respuesta, devolviendo struct vacío:", parsed.error ?? jsonText.slice(0, 200));
+      return {
+        amount: 0,
+        type: "EXPENSE",
+        description: "",
+        date: new Date(),
+        currency: "CLP",
+        confidence: "low",
+        documentType: "voucher",
+      };
     }
 
     const extracted = mapTransaccionToExtracted(parsed.transaccion);
-    if (!extracted) {
-      console.error("[Gemini Vision] Monto inválido en transaccion:", parsed.transaccion.monto);
-      return null;
-    }
 
     console.log("[Gemini Vision] Extracción OK:", {
       amount: extracted.amount,
