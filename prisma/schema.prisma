@@ -118,6 +118,14 @@ model Expense {
   description String?
   date        DateTime
   notes       String?
+
+  // Metadata extraída de comprobantes/vouchers (Gemini Vision o email parser)
+  transactionId       String? @map("transaction_id")
+  counterpartyName    String? @map("counterparty_name")
+  counterpartyRut     String? @map("counterparty_rut")
+  counterpartyAccount String? @map("counterparty_account")
+  counterpartyBank    String? @map("counterparty_bank")
+
   createdAt   DateTime    @default(now()) @map("created_at")
   updatedAt   DateTime    @updatedAt @map("updated_at")
 
@@ -125,6 +133,7 @@ model Expense {
   account  Account   @relation(fields: [accountId], references: [id])
   category Category? @relation(fields: [categoryId], references: [id])
 
+  @@unique([userId, transactionId], name: "user_transaction_unique")
   @@index([userId, date])
   @@index([userId, categoryId])
   @@index([userId, type])
@@ -398,6 +407,12 @@ model TelegramTransaction {
   parsedDate     DateTime?     @map("parsed_date")
   parsedCurrency String?       @default("CLP") @map("parsed_currency")
   rawCaption     String?       @map("raw_caption")
+  // Metadata extraída por Gemini Vision (sobrevive el flujo PENDING → CONFIRMED)
+  transactionId       String? @map("transaction_id")
+  counterpartyName    String? @map("counterparty_name")
+  counterpartyRut     String? @map("counterparty_rut")
+  counterpartyAccount String? @map("counterparty_account")
+  counterpartyBank    String? @map("counterparty_bank")
   expenseId      String?       @db.Uuid @map("expense_id")
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")

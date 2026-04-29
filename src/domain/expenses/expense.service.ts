@@ -13,6 +13,12 @@ export interface CreateExpenseInput {
   date: Date;
   notes?: string | null;
   currency?: string;
+  // Metadata estructurada del comprobante (Gemini Vision)
+  transactionId?: string | null;
+  counterpartyName?: string | null;
+  counterpartyRut?: string | null;
+  counterpartyAccount?: string | null;
+  counterpartyBank?: string | null;
 }
 
 export interface UpdateExpenseInput {
@@ -65,8 +71,23 @@ export async function createExpense(input: CreateExpenseInput) {
       date: input.date,
       notes: input.notes,
       currency: input.currency ?? "CLP",
+      transactionId: input.transactionId ?? null,
+      counterpartyName: input.counterpartyName ?? null,
+      counterpartyRut: input.counterpartyRut ?? null,
+      counterpartyAccount: input.counterpartyAccount ?? null,
+      counterpartyBank: input.counterpartyBank ?? null,
     },
     include: { category: true, account: true },
+  });
+}
+
+/**
+ * Busca un Expense ya existente por (userId, transactionId).
+ * Usado para idempotencia: evitar duplicar comprobantes que ya fueron registrados.
+ */
+export async function findByTransactionId(userId: string, transactionId: string) {
+  return db.expense.findUnique({
+    where: { user_transaction_unique: { userId, transactionId } },
   });
 }
 

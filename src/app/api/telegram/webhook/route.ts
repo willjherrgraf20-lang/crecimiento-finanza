@@ -64,6 +64,23 @@ async function handlePhoto(
     return;
   }
 
+  // Idempotencia: si ya existe un Expense con el mismo transactionId, avisar y no duplicar
+  if (extracted.transactionId) {
+    const existing = await db.expense.findUnique({
+      where: { user_transaction_unique: { userId, transactionId: extracted.transactionId } },
+    });
+    if (existing) {
+      await sendMessage(
+        chatId,
+        `ℹ️ <b>Este comprobante ya fue registrado.</b>\n\n` +
+        `ID transacción: <code>${extracted.transactionId}</code>\n` +
+        `Registrado el: ${existing.date.toLocaleDateString("es-CL")}\n\n` +
+        `No se duplica.`
+      );
+      return;
+    }
+  }
+
   // Guardar TelegramTransaction como PENDING
   const telegramTx = await db.telegramTransaction.create({
     data: {
@@ -75,6 +92,11 @@ async function handlePhoto(
       parsedDate: extracted.date,
       parsedCurrency: extracted.currency,
       rawCaption: caption ?? null,
+      transactionId: extracted.transactionId ?? null,
+      counterpartyName: extracted.counterpartyName ?? null,
+      counterpartyRut: extracted.counterpartyRut ?? null,
+      counterpartyAccount: extracted.counterpartyAccount ?? null,
+      counterpartyBank: extracted.counterpartyBank ?? null,
     },
   });
 
@@ -101,11 +123,19 @@ async function handlePhoto(
 
     const dateLabel = extracted.documentType === "statement" ? "Vencimiento" : "Fecha";
 
+  const counterpartyLine = extracted.counterpartyName
+    ? `👤 <b>${extracted.type === "INCOME" ? "Origen" : "Destino"}:</b> ${extracted.counterpartyName}` +
+      (extracted.counterpartyRut ? ` (${extracted.counterpartyRut})` : "")
+    : "";
+  const bankLine = extracted.counterpartyBank ? `🏦 <b>Banco destino:</b> ${extracted.counterpartyBank}` : "";
+  const txIdLine = extracted.transactionId ? `🔖 <b>ID:</b> <code>${extracted.transactionId}</code>` : "";
+
   const summary =
     `✅ <b>${docLabel}</b>\n\n` +
     `📊 <b>Tipo:</b> ${typeLabel(extracted.type)}\n` +
     `💵 <b>Monto:</b> ${formatAmount(extracted.amount, extracted.currency)}\n` +
     `📝 <b>Descripción:</b> ${extracted.description}\n` +
+    [counterpartyLine, bankLine, txIdLine].filter(Boolean).map((l) => l + "\n").join("") +
     `📅 <b>${dateLabel}:</b> ${extracted.date.toLocaleDateString("es-CL")}\n` +
     `🎯 <b>Confianza:</b> ${extracted.confidence}\n\n` +
     `¿Desde qué cuenta?`;
@@ -212,6 +242,11 @@ async function handleCallback(
       description: tx.parsedDesc,
       date: tx.parsedDate ?? new Date(),
       currency: tx.parsedCurrency ?? "CLP",
+      transactionId: tx.transactionId,
+      counterpartyName: tx.counterpartyName,
+      counterpartyRut: tx.counterpartyRut,
+      counterpartyAccount: tx.counterpartyAccount,
+      counterpartyBank: tx.counterpartyBank,
     });
 
     await db.telegramTransaction.update({

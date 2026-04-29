@@ -10,79 +10,184 @@ export interface ExtractedTransaction {
   currency: string;
   confidence: "high" | "medium" | "low";
   documentType?: "voucher" | "statement" | "receipt";
+  // Metadata estructurada del comprobante
+  transactionId?: string | null;
+  counterpartyName?: string | null;
+  counterpartyRut?: string | null;
+  counterpartyAccount?: string | null;
+  counterpartyBank?: string | null;
 }
 
-const EXTRACTION_PROMPT = `Eres un experto en procesamiento de comprobantes bancarios y financieros chilenos. Analiza esta imagen y extrae los datos.
+const EXTRACTION_PROMPT = `Eres un experto en procesamiento de documentos financieros chilenos y OCR. Analiza la imagen del comprobante adjunta y extrae la información estructurada con la mayor precisión posible.
 
-REGLA GENERAL: Si la imagen muestra un monto en pesos ($) o cualquier moneda junto a un movimiento bancario, es un documento financiero válido. NO la rechaces.
+REGLAS DE PROCESAMIENTO:
 
-ENCABEZADOS COMUNES EN BANCOS CHILENOS (cualquiera = documento válido):
-- "Transferencia exitosa" / "Transferencia electrónica"
-- "Movimiento Exitoso" / "Movimiento exitoso"
-- "Comprobante de transferencia" / "Comprobante de pago" / "Comprobante"
-- "Pago exitoso" / "Pago realizado" / "Pago de Tarjeta"
-- "Depósito" / "Abono"
-- "Estado de cuenta" / "Saldo a pagar"
+Monto: extraer SOLO el valor numérico. Eliminar el signo "$" y los puntos de miles.
+- "$250.000" → 250000
+- "$28.393" → 28393
+- "USD$43,24" → 43.24 (la coma es decimal)
+- En Chile el punto es separador de miles, NO decimal
 
-CÓMO DETERMINAR EL TIPO (type):
-- Texto contiene "Traspaso a:" o "Transferencia a" o "Pago a" o "Cargo" → "EXPENSE"
-- Texto contiene "Traspaso de:" o "Transferencia de" o "Abono de" o "Depósito de" o "Recibiste" → "INCOME"
-- Si el documento es un Estado de cuenta de tarjeta y muestra "Total a pagar" o "Monto a pagar" → "EXPENSE"
-- Si es un Estado de cuenta con saldo a favor → "INCOME"
-- Si dice solo "Movimiento Exitoso" + "Cargo por pago tc" → "EXPENSE" (es un cargo)
+Fechas: normalizar a "YYYY-MM-DD". Hora a "HH:mm:ss".
+- "27 de abril 2026" → "2026-04-27"
+- "27/04/2026" → "2026-04-27"
+- "15:55 hrs" → "15:55:00"
 
-CÓMO DETERMINAR documentType:
-- "voucher" → comprobante de transferencia bancaria con campos como Monto + Cuenta Origen/Destinatario + Rut
-- "statement" → estado de cuenta de tarjeta de crédito con totales y fechas de vencimiento
-- "receipt" → boleta o factura de compra
+RUT: mantener formato original con puntos y guión verificador (ej: "26.952.482-0").
 
-EXTRACCIÓN DEL MONTO:
-- En Chile el formato es "$1.500.000" → 1500000 (los puntos son separadores de miles, NO decimales)
-- Si ves "$28.393" debe parsearse como 28393 (no 28.393)
-- Si hay coma decimal "$1.234,56" → 1234.56
-- Si el documento muestra varios montos (ej. estado de cuenta), usa el campo "Monto" principal o "Total a pagar"
-- Si es un voucher con "Monto $X" y también "USD$Y", usa el monto principal en CLP
+ID de transacción: si está fragmentado en varias líneas (ej: "TEFMBCO260427155530457008" + "2240"), CONCATENARLO sin espacios → "TEFMBCO2604271555304570082240".
 
-EXTRACCIÓN DE FECHA:
-- Busca campos como "Fecha movimiento", "Fecha y hora", "Fecha"
-- Formatos comunes: "27 de abril 2026", "27/04/2026", "27-04-2026"
-- Convertir a ISO 8601 "2026-04-27T15:55:00.000Z"
-- Si no hay fecha clara, usa la fecha actual
+Campos vacíos: devolver null. NUNCA inventes datos. Limpia espacios al inicio/final de strings.
 
-DESCRIPCIÓN (máximo 100 caracteres):
-- Si hay campo "Descripción" en el comprobante, úsalo (ej: "Traspaso a: hardware chile spa")
-- Si es pago de TC: "Pago Tarjeta de Crédito"
-- Si es transferencia: "Transferencia a [nombre]" o "Depósito de [nombre]"
-- Si no hay info clara: usa el banco emisor + tipo
+DETECCIÓN DEL TIPO DE DOCUMENTO Y DIRECCIÓN:
 
-INSTRUCCIONES ESTRICTAS:
-1. Responde SOLO con JSON válido, sin texto adicional ni bloques de código
-2. El monto debe ser número (no string), sin separadores de miles
-3. confidence: "high" si los datos son claros, "medium" si parcialmente legibles, "low" si dudoso
-4. Currency: por defecto "CLP" salvo que veas explícitamente "USD" o "USDT"
+documentType:
+- "voucher" → comprobante de transferencia electrónica
+- "statement" → estado de cuenta de tarjeta de crédito
+- "receipt" → boleta o factura
 
-FORMATO DE RESPUESTA EXACTO:
+type (dirección del dinero, desde la perspectiva del titular del comprobante):
+- "EXPENSE" → texto contiene "Traspaso a:", "Transferencia enviada", "Pago a", "Cargo por", "Pago de Tarjeta", "Compra"
+- "INCOME"  → texto contiene "Traspaso de:", "Transferencia recibida", "Abono de", "Depósito de", "Recibiste"
+- "TRANSFER" → solo si explícitamente dice "Traspaso entre cuentas propias"
+
+Si dice solo "Movimiento Exitoso" + "Cargo por pago tc" → "EXPENSE".
+Si es estado de cuenta con saldo a pagar → "EXPENSE", con saldo a favor → "INCOME".
+
+CONFIANZA (campo "confianza"):
+- "alta": todos los campos críticos legibles y consistentes
+- "media": algún campo borroso o inferido
+- "baja": imagen borrosa, datos parciales, o documento incompleto
+
+REGLAS PARA PAGO DE TARJETA DE CRÉDITO:
+- Usar descripcion = "Pago Tarjeta de Crédito" (o lo que diga el documento)
+- Dejar nombre_destinatario, rut_destinatario, cuenta_abono como null si no aparecen
+- transactionId si lo trae
+
+DIFERENCIAR FECHAS:
+- fecha_movimiento = fecha lógica del movimiento (ej. "Fecha movimiento")
+- fecha_hora_comprobante = fecha+hora de emisión al pie (ej. "Fecha y hora")
+
+FORMATO DE SALIDA EXACTO (responde SOLO el JSON, sin texto adicional ni bloques de código):
+
 {
-  "documentType": "voucher" | "statement" | "receipt",
-  "amount": number,
-  "type": "EXPENSE" | "INCOME" | "TRANSFER",
-  "description": string,
-  "date": string (ISO 8601),
-  "currency": "CLP" | "USD" | "USDT",
-  "confidence": "high" | "medium" | "low"
+  "transaccion": {
+    "documentType": "voucher" | "statement" | "receipt",
+    "type": "EXPENSE" | "INCOME" | "TRANSFER",
+    "currency": "CLP" | "USD" | "USDT",
+    "monto": 0,
+    "descripcion": "",
+    "fecha_movimiento": "YYYY-MM-DD",
+    "nombre_origen": null,
+    "rut_origen": null,
+    "cuenta_origen": null,
+    "nombre_destinatario": null,
+    "rut_destinatario": null,
+    "cuenta_abono": null,
+    "banco_destino": null,
+    "id_transaccion": null,
+    "fecha_hora_comprobante": "YYYY-MM-DD HH:mm:ss",
+    "confianza": "alta" | "media" | "baja"
+  }
 }
 
-SOLO devuelve {"error": "..."} si la imagen es totalmente ilegible o claramente NO contiene info financiera (ej: una foto de paisaje, un selfie, etc.).`;
+Si la imagen NO contiene información financiera (paisaje, selfie, captura cualquiera): {"error": "No es un documento financiero válido"}.`;
 
 /**
  * Strips markdown code fences from a string that may wrap JSON.
- * Handles both ```json ... ``` and ``` ... ``` variants robustly.
  */
 function stripCodeFences(text: string): string {
   return text
     .replace(/^```(?:json)?\s*/i, "")
     .replace(/\s*```\s*$/, "")
     .trim();
+}
+
+interface RawTransaccion {
+  documentType?: string;
+  type?: string;
+  currency?: string;
+  monto?: number | string;
+  descripcion?: string;
+  fecha_movimiento?: string;
+  nombre_origen?: string | null;
+  rut_origen?: string | null;
+  cuenta_origen?: string | null;
+  nombre_destinatario?: string | null;
+  rut_destinatario?: string | null;
+  cuenta_abono?: string | null;
+  banco_destino?: string | null;
+  id_transaccion?: string | null;
+  fecha_hora_comprobante?: string;
+  confianza?: string;
+}
+
+function parseAmount(raw: number | string | undefined): number {
+  if (typeof raw === "number") return raw;
+  if (typeof raw !== "string") return NaN;
+  const trimmed = raw.trim().replace(/[^\d.,]/g, "");
+  // Si el último separador es coma con 1-2 dígitos, es decimal
+  const hasCommaDecimal = /,\d{1,2}$/.test(trimmed);
+  const cleaned = hasCommaDecimal
+    ? trimmed.replace(/\./g, "").replace(",", ".")
+    : trimmed.replace(/\./g, "").replace(",", "");
+  return parseFloat(cleaned);
+}
+
+function parseDate(fechaMovimiento?: string, fechaHoraCompr?: string): Date {
+  // Preferir fecha+hora del comprobante; fallback a fecha_movimiento
+  const candidates = [fechaHoraCompr, fechaMovimiento].filter(Boolean) as string[];
+  for (const c of candidates) {
+    // Reemplaza espacio por T para que Date acepte "2026-04-27 15:52:00" como ISO-ish
+    const normalized = c.includes("T") ? c : c.replace(" ", "T");
+    const d = new Date(normalized);
+    if (!isNaN(d.getTime())) return d;
+  }
+  return new Date();
+}
+
+function mapTransaccionToExtracted(t: RawTransaccion): ExtractedTransaction | null {
+  const amount = parseAmount(t.monto);
+  if (isNaN(amount) || amount <= 0) return null;
+
+  const docType = String(t.documentType ?? "voucher");
+  const documentType: "voucher" | "statement" | "receipt" =
+    docType === "statement" ? "statement" :
+    docType === "receipt"  ? "receipt"  : "voucher";
+
+  const txTypeRaw = String(t.type ?? "EXPENSE").toUpperCase();
+  const type: "EXPENSE" | "INCOME" | "TRANSFER" =
+    txTypeRaw === "INCOME"   ? "INCOME"   :
+    txTypeRaw === "TRANSFER" ? "TRANSFER" : "EXPENSE";
+
+  const confRaw = String(t.confianza ?? "media").toLowerCase();
+  const confidence: "high" | "medium" | "low" =
+    confRaw === "alta" ? "high" :
+    confRaw === "baja" ? "low"  : "medium";
+
+  // Construir descripción priorizando descripcion explícita
+  let description = (t.descripcion ?? "").trim();
+  if (!description) {
+    if (type === "INCOME" && t.nombre_origen) description = `Depósito de ${t.nombre_origen}`;
+    else if (type === "EXPENSE" && t.nombre_destinatario) description = `Pago a ${t.nombre_destinatario}`;
+    else description = documentType === "statement" ? "Pago Tarjeta de Crédito" : "Movimiento bancario";
+  }
+  if (description.length > 100) description = description.slice(0, 100);
+
+  return {
+    amount,
+    type,
+    description,
+    date: parseDate(t.fecha_movimiento, t.fecha_hora_comprobante),
+    currency: (t.currency ?? "CLP").toUpperCase(),
+    confidence,
+    documentType,
+    transactionId: t.id_transaccion?.replace(/\s+/g, "") || null,
+    counterpartyName: type === "INCOME" ? (t.nombre_origen ?? null) : (t.nombre_destinatario ?? null),
+    counterpartyRut: type === "INCOME" ? (t.rut_origen ?? null) : (t.rut_destinatario ?? null),
+    counterpartyAccount: type === "INCOME" ? (t.cuenta_origen ?? null) : (t.cuenta_abono ?? null),
+    counterpartyBank: t.banco_destino ?? null,
+  };
 }
 
 export async function extractTransactionFromImage(
@@ -92,161 +197,63 @@ export async function extractTransactionFromImage(
   try {
     console.log("[Gemini Vision] Iniciando extracción. mimeType:", mimeType, "imageBase64 length:", imageBase64.length);
 
-    const model = genAI.getGenerativeModel({ 
+    const model = genAI.getGenerativeModel({
       model: "gemini-2.0-flash",
       generationConfig: {
-        temperature: 0.2,
+        temperature: 0.1,
         maxOutputTokens: 2048,
+        responseMimeType: "application/json",
       },
     });
 
-    // Intentar con el prompt principal
     const result = await model.generateContent([
       EXTRACTION_PROMPT,
       {
-        inlineData: {
-          data: imageBase64,
-          mimeType,
-        },
+        inlineData: { data: imageBase64, mimeType },
       },
     ]);
 
     const rawText = result.response.text();
-    console.log("[Gemini Vision] Respuesta raw de Gemini:", rawText);
+    console.log("[Gemini Vision] Respuesta raw de Gemini:", rawText.slice(0, 1000));
 
     const jsonText = stripCodeFences(rawText.trim());
-    console.log("[Gemini Vision] JSON limpio a parsear:", jsonText);
 
-    let parsed: Record<string, unknown>;
+    let parsed: { transaccion?: RawTransaccion; error?: string };
     try {
       parsed = JSON.parse(jsonText);
     } catch (parseError) {
-      console.error("[Gemini Vision] Error parseando JSON:", parseError, "| Texto recibido:", jsonText);
-      // Intentar con prompt alternativo más simple
-      return await extractWithSimplePrompt(imageBase64, mimeType);
+      console.error("[Gemini Vision] Error parseando JSON:", parseError, "| Texto:", jsonText.slice(0, 500));
+      return null;
     }
 
     if (parsed.error) {
       console.log("[Gemini Vision] Gemini rechazó la imagen:", parsed.error);
-      // Intentar con prompt alternativo más simple
-      return await extractWithSimplePrompt(imageBase64, mimeType);
-    }
-
-    const docType = String(parsed.documentType);
-    const documentType: "voucher" | "statement" | "receipt" = 
-      docType === "statement" ? "statement" :
-      docType === "receipt" ? "receipt" : "voucher";
-
-    const txType = String(parsed.type);
-    const type: "EXPENSE" | "INCOME" | "TRANSFER" = 
-      txType === "INCOME" ? "INCOME" :
-      txType === "TRANSFER" ? "TRANSFER" : "EXPENSE";
-
-    const conf = String(parsed.confidence);
-    const confidence: "high" | "medium" | "low" = 
-      conf === "high" ? "high" :
-      conf === "low" ? "low" : "medium";
-
-    const amount = parseFloat(String(parsed.amount).replace(/[^\d.]/g, ""));
-    if (isNaN(amount) || amount <= 0) {
-      console.error("[Gemini Vision] Monto inválido:", parsed.amount);
       return null;
     }
 
-    return {
-      amount,
-      type,
-      description: (parsed.description as string) ?? "Movimiento bancario",
-      date: new Date((parsed.date as string) ?? Date.now()),
-      currency: (parsed.currency as string) ?? "CLP",
-      confidence,
-      documentType,
-    };
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error("[Gemini Vision] Error inesperado al procesar imagen:", msg, error);
-    return null;
-  }
-}
+    if (!parsed.transaccion) {
+      console.error("[Gemini Vision] Respuesta sin campo 'transaccion':", jsonText.slice(0, 500));
+      return null;
+    }
 
-const SIMPLE_PROMPT = `Analiza esta imagen y extrae cualquier información financiera o de transacción.
+    const extracted = mapTransaccionToExtracted(parsed.transaccion);
+    if (!extracted) {
+      console.error("[Gemini Vision] Monto inválido en transaccion:", parsed.transaccion.monto);
+      return null;
+    }
 
-Si ves un comprobante, boleta, factura, transferencia o cualquier documento con un monto de dinero:
-- Extrae el monto total
-- Determina si es un gasto (EXPENSE), ingreso (INCOME) o transferencia (TRANSFER)
-- Extrae la fecha si es visible
-- Describe brevemente el documento
-
-Responde SOLO con JSON válido sin bloques de código:
-{
-  "amount": number,
-  "type": "EXPENSE" | "INCOME" | "TRANSFER",
-  "description": string,
-  "date": "YYYY-MM-DDTHH:mm:ss.sssZ",
-  "currency": "CLP" | "USD",
-  "confidence": "high" | "medium" | "low"
-}
-
-Si realmente no hay información financiera, responde: {"error": "No es un documento financiero válido"}`;
-
-async function extractWithSimplePrompt(
-  imageBase64: string,
-  mimeType: string
-): Promise<ExtractedTransaction | null> {
-  try {
-    console.log("[Gemini Vision] Intentando con prompt simple...");
-    
-    const model = genAI.getGenerativeModel({ 
-      model: "gemini-2.0-flash",
-      generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: 1024,
-      },
+    console.log("[Gemini Vision] Extracción OK:", {
+      amount: extracted.amount,
+      type: extracted.type,
+      txId: extracted.transactionId,
+      counterparty: extracted.counterpartyName,
+      confidence: extracted.confidence,
     });
 
-    const result = await model.generateContent([
-      SIMPLE_PROMPT,
-      {
-        inlineData: {
-          data: imageBase64,
-          mimeType,
-        },
-      },
-    ]);
-
-    const rawText = result.response.text();
-    console.log("[Gemini Vision] Respuesta prompt simple:", rawText);
-
-    const jsonText = stripCodeFences(rawText.trim());
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(jsonText);
-    } catch {
-      console.error("[Gemini Vision] Error parseando respuesta prompt simple");
-      return null;
-    }
-
-    if (parsed.error) {
-      console.log("[Gemini Vision] Prompt simple también rechazó la imagen");
-      return null;
-    }
-
-    const amount = parseFloat(String(parsed.amount).replace(/[^\d.]/g, ""));
-    if (isNaN(amount) || amount <= 0) {
-      return null;
-    }
-
-    return {
-      amount,
-      type: (parsed.type as "EXPENSE" | "INCOME" | "TRANSFER") ?? "EXPENSE",
-      description: (parsed.description as string) ?? "Movimiento bancario",
-      date: new Date((parsed.date as string) ?? Date.now()),
-      currency: (parsed.currency as string) ?? "CLP",
-      confidence: "medium" as const,
-      documentType: "voucher" as const,
-    };
+    return extracted;
   } catch (error) {
-    console.error("[Gemini Vision] Error con prompt simple:", error);
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error("[Gemini Vision] Error inesperado:", msg, error);
     return null;
   }
 }
