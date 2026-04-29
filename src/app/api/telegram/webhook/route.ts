@@ -43,6 +43,9 @@ function getMissingFields(extracted: ExtractedTransaction): string[] {
   // Tipo de documento — siempre debería existir (default voucher)
   if (!extracted.documentType) missing.push("Tipo de documento");
 
+  // Fecha — si Gemini no la detectó, es null (no se inventa "hoy")
+  if (!extracted.date) missing.push("Fecha del documento");
+
   // Descripción — esperada en todos los documentos
   if (!extracted.description || extracted.description.trim().length < 3) {
     missing.push("Descripción");
@@ -190,6 +193,23 @@ async function handlePhoto(
       );
       return;
     }
+
+    // Idempotencia adicional: TelegramTransaction PENDING del mismo voucher.
+    // Evita crashear con violación de unique constraint si el usuario reenvía
+    // antes de confirmar el primero.
+    const pendingTx = await db.telegramTransaction.findFirst({
+      where: { userId, transactionId: extracted.transactionId, status: "PENDING" },
+      orderBy: { createdAt: "desc" },
+    });
+    if (pendingTx) {
+      await sendMessage(
+        chatId,
+        `⏳ <b>Ya estás procesando este comprobante.</b>\n\n` +
+        `ID transacción: <code>${extracted.transactionId}</code>\n\n` +
+        `Termina la confirmación del envío anterior, o cancélalo, antes de reenviarlo.`
+      );
+      return;
+    }
   }
 
   // Guardar TelegramTransaction como PENDING
@@ -233,14 +253,15 @@ async function handlePhoto(
   const amountStr = extracted.amount > 0
     ? formatAmount(extracted.amount, extracted.currency)
     : "<i>no detectado</i>";
-  const descStr = extracted.description?.trim() ? extracted.description : "<i>no detectado</i>";
+  const descStr = extracted.description?.trim() ? extracted.description : "<i>no detectada</i>";
+  const dateStr = extracted.date ? extracted.date.toLocaleDateString("es-CL") : "<i>no detectada</i>";
 
   const dataLines =
     `📊 <b>Tipo:</b> ${typeLabel(extracted.type)}\n` +
     `💵 <b>Monto:</b> ${amountStr}\n` +
     `📝 <b>Descripción:</b> ${descStr}\n` +
     [counterpartyLine, accountLine, bankLine, txIdLine].filter(Boolean).map((l) => l + "\n").join("") +
-    `📅 <b>${dateLabel}:</b> ${extracted.date.toLocaleDateString("es-CL")}\n` +
+    `📅 <b>${dateLabel}:</b> ${dateStr}\n` +
     `🎯 <b>Confianza:</b> ${extracted.confidence}`;
 
   // Verificar campos faltantes / confianza baja
@@ -386,7 +407,7 @@ async function handleCallback(
   if (parts[0] === "cat") {
     const [, txId, accountId, categoryId] = parts;
 
-    const tx = await db.telegramTransaction.findUnique({ where: { id: txId } });
+    const tx = await db.telegramTransaction.findFirst({ where: { id: txId, userId } });
     if (!tx) {
       await answerCallbackQuery(queryId, "Error: transacción no encontrada");
       return;

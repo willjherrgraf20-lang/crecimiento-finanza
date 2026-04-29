@@ -5,8 +5,10 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 export interface ExtractedTransaction {
   amount: number;
   type: "EXPENSE" | "INCOME" | "TRANSFER";
+  // "" = no detectado. NUNCA se rellena con valores inventados.
   description: string;
-  date: Date;
+  // null = no detectado. El sistema NO inventa la fecha.
+  date: Date | null;
   currency: string;
   confidence: "high" | "medium" | "low";
   documentType?: "voucher" | "statement" | "receipt";
@@ -148,8 +150,9 @@ function parseAmount(raw: number | string | undefined): number {
   return parseFloat(cleaned);
 }
 
-function parseDate(fechaMovimiento?: string, fechaHoraCompr?: string): Date {
-  // Preferir fecha+hora del comprobante; fallback a fecha_movimiento
+function parseDate(fechaMovimiento?: string | null, fechaHoraCompr?: string | null): Date | null {
+  // Preferir fecha+hora del comprobante; fallback a fecha_movimiento.
+  // Si Gemini no detectó fecha → null (NO inventar "hoy").
   const candidates = [fechaHoraCompr, fechaMovimiento].filter(Boolean) as string[];
   for (const c of candidates) {
     // Reemplaza espacio por T para que Date acepte "2026-04-27 15:52:00" como ISO-ish
@@ -157,7 +160,7 @@ function parseDate(fechaMovimiento?: string, fechaHoraCompr?: string): Date {
     const d = new Date(normalized);
     if (!isNaN(d.getTime())) return d;
   }
-  return new Date();
+  return null;
 }
 
 function mapTransaccionToExtracted(t: RawTransaccion): ExtractedTransaction {
@@ -181,13 +184,10 @@ function mapTransaccionToExtracted(t: RawTransaccion): ExtractedTransaction {
     confRaw === "alta" ? "high" :
     confRaw === "baja" ? "low"  : "medium";
 
-  // Construir descripción priorizando descripcion explícita
+  // Descripción: usar SOLO lo que Gemini extrajo del documento. Si está vacía,
+  // se mantiene "" para que el flujo de "datos faltantes" la marque como no detectada.
+  // NO se inventa con base en otros campos.
   let description = (t.descripcion ?? "").trim();
-  if (!description) {
-    if (type === "INCOME" && t.nombre_origen) description = `Depósito de ${t.nombre_origen}`;
-    else if (type === "EXPENSE" && t.nombre_destinatario) description = `Pago a ${t.nombre_destinatario}`;
-    else description = documentType === "statement" ? "Pago Tarjeta de Crédito" : "Movimiento bancario";
-  }
   if (description.length > 100) description = description.slice(0, 100);
 
   return {
@@ -252,7 +252,7 @@ export async function extractTransactionFromImage(
         amount: 0,
         type: "EXPENSE",
         description: "",
-        date: new Date(),
+        date: null,
         currency: "CLP",
         confidence: "low",
         documentType: "voucher",
