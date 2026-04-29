@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { encrypt, decrypt } from "@/lib/crypto";
 import { parseEmailTransaction, isBankEmail, GMAIL_QUERY } from "./emailParser.service";
-import type { GmailMessage } from "./email.types";
+import type { GmailMessage, GmailMessagePart } from "./email.types";
 
 const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -83,7 +83,14 @@ export async function isGmailConnected(userId: string): Promise<boolean> {
 
 // ─── Email scanning ───────────────────────────────────────────────────────────
 
-export async function scanBankEmails(userId: string): Promise<{ scanned: number; newPending: number; skipped: number }> {
+export async function scanBankEmails(userId: string): Promise<{
+  scanned: number;
+  newPending: number;
+  skipped: number;
+  skippedExists: number;
+  skippedNotBank: number;
+  skippedNoParse: number;
+}> {
   let accessToken = await getValidAccessToken(userId);
 
   // Buscar emails bancarios (últimos 90 días) — Gmail usa formato YYYY/MM/DD para after:
@@ -132,35 +139,48 @@ export async function scanBankEmails(userId: string): Promise<{ scanned: number;
   const messages = listData.messages ?? [];
 
   let newPending = 0;
-  let skipped = 0;
+  let skippedExists = 0;
+  let skippedNotBank = 0;
+  let skippedNoParse = 0;
 
   for (const msg of messages) {
     // Verificar si ya fue procesado
     const existing = await db.emailTransaction.findUnique({
       where: { gmailMessageId: msg.id },
     });
-    if (existing) { skipped++; continue; }
+    if (existing) { skippedExists++; continue; }
 
-    // Obtener detalles del email
-    const msgRes = await fetch(`${GMAIL_API}/messages/${msg.id}?format=metadata&metadataHeaders=Subject,From,Date`, {
+    // Obtener detalles del email — full incluye el body completo
+    const msgRes = await fetch(`${GMAIL_API}/messages/${msg.id}?format=full`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
 
-    if (!msgRes.ok) { skipped++; continue; }
+    if (!msgRes.ok) { skippedNoParse++; continue; }
 
     const msgData = await msgRes.json() as GmailMessage;
     const headers = msgData.payload?.headers ?? [];
     const subject = headers.find((h) => h.name === "Subject")?.value ?? "";
     const from = headers.find((h) => h.name === "From")?.value ?? "";
     const snippet = msgData.snippet ?? "";
+    const bodyText = extractBodyText(msgData);
     const receivedAt = msgData.internalDate
       ? new Date(parseInt(msgData.internalDate))
       : new Date();
 
-    if (!isBankEmail(from)) { skipped++; continue; }
+    if (!isBankEmail(from)) {
+      skippedNotBank++;
+      console.log(`[Email scan] Skipped (no bank match): from="${from}" subject="${subject.slice(0, 80)}"`);
+      continue;
+    }
 
-    const parsed = parseEmailTransaction(msg.id, subject, snippet, from, receivedAt);
-    if (!parsed) { skipped++; continue; }
+    // Pasar body completo al parser. Si no hay body, usar snippet.
+    const fullText = bodyText || snippet;
+    const parsed = parseEmailTransaction(msg.id, subject, fullText, from, receivedAt);
+    if (!parsed) {
+      skippedNoParse++;
+      console.log(`[Email scan] Skipped (no parse): from="${from}" subject="${subject.slice(0, 80)}" snippet="${snippet.slice(0, 100)}"`);
+      continue;
+    }
 
     // Guardar como EmailTransaction PENDING
     await db.emailTransaction.create({
@@ -181,7 +201,72 @@ export async function scanBankEmails(userId: string): Promise<{ scanned: number;
     newPending++;
   }
 
-  return { scanned: messages.length, newPending, skipped };
+  console.log(`[Email scan] Resultado: scanned=${messages.length} newPending=${newPending} skippedExists=${skippedExists} skippedNotBank=${skippedNotBank} skippedNoParse=${skippedNoParse}`);
+
+  return {
+    scanned: messages.length,
+    newPending,
+    skipped: skippedExists + skippedNotBank + skippedNoParse,
+    skippedExists,
+    skippedNotBank,
+    skippedNoParse,
+  };
+}
+
+// ─── Helper: extraer texto plano del body de un mensaje Gmail ─────────────────
+function decodeBase64Url(data: string): string {
+  // Gmail usa base64url (− y _ en lugar de + y /)
+  const normalized = data.replace(/-/g, "+").replace(/_/g, "/");
+  try {
+    return Buffer.from(normalized, "base64").toString("utf-8");
+  } catch {
+    return "";
+  }
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#?\w+;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractBodyText(msgData: GmailMessage): string {
+  const payload = msgData.payload;
+  if (!payload) return "";
+
+  // Caso 1: body directo en payload
+  if (payload.body?.data) {
+    const decoded = decodeBase64Url(payload.body.data);
+    return stripHtml(decoded).slice(0, 5000);
+  }
+
+  // Caso 2: multipart — preferir text/plain, fallback text/html
+  const parts = payload.parts ?? [];
+  let plainText = "";
+  let htmlText = "";
+
+  function walk(part: GmailMessagePart) {
+    if (part.body?.data && part.mimeType) {
+      const decoded = decodeBase64Url(part.body.data);
+      if (part.mimeType === "text/plain" && !plainText) plainText = decoded;
+      else if (part.mimeType === "text/html" && !htmlText) htmlText = decoded;
+    }
+    for (const sub of part.parts ?? []) walk(sub);
+  }
+
+  for (const part of parts) walk(part);
+
+  if (plainText) return plainText.slice(0, 5000).replace(/\s+/g, " ").trim();
+  if (htmlText) return stripHtml(htmlText).slice(0, 5000);
+  return "";
 }
 
 // ─── Listar emails pendientes ─────────────────────────────────────────────────

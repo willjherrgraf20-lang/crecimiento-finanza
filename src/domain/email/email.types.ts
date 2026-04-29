@@ -18,6 +18,12 @@ export interface GmailTokenData {
   scope: string;
 }
 
+export interface GmailMessagePart {
+  mimeType?: string;
+  body?: { data?: string };
+  parts?: GmailMessagePart[];
+}
+
 export interface GmailMessage {
   id: string;
   threadId: string;
@@ -25,7 +31,7 @@ export interface GmailMessage {
   payload?: {
     headers?: { name: string; value: string }[];
     body?: { data?: string };
-    parts?: Array<{ mimeType: string; body?: { data?: string } }>;
+    parts?: GmailMessagePart[];
   };
   internalDate?: string;
 }

@@ -24,7 +24,13 @@ export default function EmailPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [scanning, setScanning] = useState(false);
-  const [scanResult, setScanResult] = useState<{ scanned: number; newPending: number } | null>(null);
+  const [scanResult, setScanResult] = useState<{
+    scanned: number;
+    newPending: number;
+    skippedExists?: number;
+    skippedNotBank?: number;
+    skippedNoParse?: number;
+  } | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -71,7 +77,13 @@ export default function EmailPage() {
       const res = await fetch("/api/email/scan", { method: "POST" });
       const data = await res.json();
       if (res.ok) {
-        setScanResult({ scanned: data.scanned, newPending: data.newPending });
+        setScanResult({
+          scanned: data.scanned,
+          newPending: data.newPending,
+          skippedExists: data.skippedExists,
+          skippedNotBank: data.skippedNotBank,
+          skippedNoParse: data.skippedNoParse,
+        });
         await fetchData();
       } else {
         setScanError(data.error ?? `Error ${res.status}`);
@@ -132,8 +144,13 @@ export default function EmailPage() {
       </div>
 
       {scanResult && (
-        <div className="rounded-lg border border-[var(--color-gain-subtle)] bg-[var(--color-gain-subtle)]/40 px-4 py-3 text-sm text-[var(--color-gain)]">
-          Escaneados: {scanResult.scanned} | Nuevos pendientes: {scanResult.newPending}
+        <div className="rounded-lg border border-[var(--color-gain-subtle)] bg-[var(--color-gain-subtle)]/40 px-4 py-3 text-sm text-[var(--color-gain)] space-y-1">
+          <div>Escaneados: {scanResult.scanned} | Nuevos pendientes: {scanResult.newPending}</div>
+          {scanResult.scanned > 0 && scanResult.newPending === 0 && (
+            <div className="text-xs text-[var(--color-text-secondary)] font-normal">
+              Descartados: ya procesados {scanResult.skippedExists ?? 0} · no es banco {scanResult.skippedNotBank ?? 0} · no se pudo parsear {scanResult.skippedNoParse ?? 0}
+            </div>
+          )}
         </div>
       )}
 
