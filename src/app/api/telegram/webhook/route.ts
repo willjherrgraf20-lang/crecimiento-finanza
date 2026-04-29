@@ -9,7 +9,7 @@ import {
   type TelegramUpdate,
   type InlineKeyboardButton,
 } from "@/lib/telegram";
-import { extractTransactionFromImage } from "@/lib/gemini-vision";
+import { extractTransactionFromImage, type ExtractedTransaction } from "@/lib/gemini-vision";
 import { createExpense } from "@/domain/expenses/expense.service";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -28,6 +28,69 @@ function typeLabel(type: string): string {
     case "TRANSFER": return "🔄 Transferencia";
     default: return type;
   }
+}
+
+/**
+ * Devuelve la lista de campos que el usuario espera y NO se detectaron.
+ * El nombre del campo cambia según la dirección del movimiento.
+ */
+function getMissingFields(extracted: ExtractedTransaction): string[] {
+  const missing: string[] = [];
+
+  // Tipo de documento — siempre debería existir (default voucher)
+  if (!extracted.documentType) missing.push("Tipo de documento");
+
+  // Descripción — esperada en todos los documentos
+  if (!extracted.description || extracted.description.trim().length < 3) {
+    missing.push("Descripción");
+  }
+
+  // Para vouchers (transferencias), pedir info de la contraparte e ID
+  if (extracted.documentType === "voucher") {
+    const isIncome = extracted.type === "INCOME";
+    if (!extracted.counterpartyName) missing.push(isIncome ? "Nombre origen" : "Nombre destinatario");
+    if (!extracted.counterpartyRut) missing.push(isIncome ? "RUT origen" : "RUT destinatario");
+    if (!extracted.counterpartyAccount) missing.push(isIncome ? "Cuenta origen" : "Cuenta abono");
+    if (!extracted.transactionId) missing.push("ID de transacción");
+  }
+
+  // Para statements (pago tarjeta) — solo ID es esperado
+  if (extracted.documentType === "statement") {
+    if (!extracted.transactionId) missing.push("ID de transacción");
+  }
+
+  return missing;
+}
+
+/**
+ * Muestra los botones de selección de cuenta. Se usa tanto desde el flujo
+ * "extracción limpia" como desde el callback "proceed" (continuar pese a faltantes).
+ */
+async function askForAccount(
+  chatId: number,
+  userId: string,
+  txId: string,
+  preface: string
+): Promise<void> {
+  const accounts = await db.account.findMany({
+    where: { userId },
+    take: 5,
+    orderBy: { createdAt: "asc" },
+  });
+
+  if (accounts.length === 0) {
+    await sendMessage(chatId, "⚠️ No tienes cuentas registradas. Crea una cuenta primero en la aplicación.");
+    return;
+  }
+
+  const accountButtons: InlineKeyboardButton[][] = accounts.map((acc) => [
+    {
+      text: `${acc.name} (${acc.currency})`,
+      callback_data: `acct:${txId}:${acc.id}`,
+    },
+  ]);
+
+  await sendInlineKeyboard(chatId, preface, accountButtons);
 }
 
 // ─── Procesamiento de imágenes/fotos ─────────────────────────────────────────
@@ -100,54 +163,62 @@ async function handlePhoto(
     },
   });
 
-  // Obtener cuentas del usuario para mostrar botones
-  const accounts = await db.account.findMany({
-    where: { userId },
-    take: 5,
-    orderBy: { createdAt: "asc" },
-  });
-
-  if (accounts.length === 0) {
-    await sendMessage(
-      chatId,
-      "⚠️ No tienes cuentas registradas. Crea una cuenta primero en la aplicación."
-    );
-    return;
-  }
-
   const docLabel = extracted.documentType === "statement"
-      ? "Estado de cuenta detectado"
-      : extracted.documentType === "receipt"
-      ? "Boleta/Factura detectada"
-      : "Comprobante detectado";
+    ? "Estado de cuenta detectado"
+    : extracted.documentType === "receipt"
+    ? "Boleta/Factura detectada"
+    : "Comprobante detectado";
 
-    const dateLabel = extracted.documentType === "statement" ? "Vencimiento" : "Fecha";
+  const dateLabel = extracted.documentType === "statement" ? "Vencimiento" : "Fecha";
 
   const counterpartyLine = extracted.counterpartyName
     ? `👤 <b>${extracted.type === "INCOME" ? "Origen" : "Destino"}:</b> ${extracted.counterpartyName}` +
       (extracted.counterpartyRut ? ` (${extracted.counterpartyRut})` : "")
     : "";
-  const bankLine = extracted.counterpartyBank ? `🏦 <b>Banco destino:</b> ${extracted.counterpartyBank}` : "";
+  const accountLine = extracted.counterpartyAccount
+    ? `💳 <b>${extracted.type === "INCOME" ? "Cuenta origen" : "Cuenta abono"}:</b> <code>${extracted.counterpartyAccount}</code>`
+    : "";
+  const bankLine = extracted.counterpartyBank ? `🏦 <b>Banco:</b> ${extracted.counterpartyBank}` : "";
   const txIdLine = extracted.transactionId ? `🔖 <b>ID:</b> <code>${extracted.transactionId}</code>` : "";
 
-  const summary =
-    `✅ <b>${docLabel}</b>\n\n` +
+  const dataLines =
     `📊 <b>Tipo:</b> ${typeLabel(extracted.type)}\n` +
     `💵 <b>Monto:</b> ${formatAmount(extracted.amount, extracted.currency)}\n` +
     `📝 <b>Descripción:</b> ${extracted.description}\n` +
-    [counterpartyLine, bankLine, txIdLine].filter(Boolean).map((l) => l + "\n").join("") +
+    [counterpartyLine, accountLine, bankLine, txIdLine].filter(Boolean).map((l) => l + "\n").join("") +
     `📅 <b>${dateLabel}:</b> ${extracted.date.toLocaleDateString("es-CL")}\n` +
-    `🎯 <b>Confianza:</b> ${extracted.confidence}\n\n` +
-    `¿Desde qué cuenta?`;
+    `🎯 <b>Confianza:</b> ${extracted.confidence}`;
 
-  const accountButtons: InlineKeyboardButton[][] = accounts.map((acc) => [
-    {
-      text: `${acc.name} (${acc.currency})`,
-      callback_data: `acct:${telegramTx.id}:${acc.id}`,
-    },
-  ]);
+  // Verificar campos faltantes / confianza baja
+  const missing = getMissingFields(extracted);
+  const lowConfidence = extracted.confidence === "low";
 
-  await sendInlineKeyboard(chatId, summary, accountButtons);
+  if (missing.length > 0 || lowConfidence) {
+    const reviewText =
+      `⚠️ <b>${docLabel} — datos incompletos</b>\n\n` +
+      `Lo que pude leer:\n${dataLines}\n\n` +
+      (missing.length > 0
+        ? `<b>No detecté:</b>\n${missing.map((m) => `• ${m}`).join("\n")}\n\n`
+        : "") +
+      (lowConfidence
+        ? `🔍 La lectura tiene confianza baja — la imagen puede estar borrosa o cortada.\n\n`
+        : "") +
+      `¿Qué quieres hacer?`;
+
+    await sendInlineKeyboard(chatId, reviewText, [
+      [{ text: "✅ Continuar de todos modos", callback_data: `proceed:${telegramTx.id}` }],
+      [{ text: "🔁 Cancelar y reenviar foto", callback_data: `discard:${telegramTx.id}` }],
+    ]);
+    return;
+  }
+
+  // Extracción limpia → ir directo a elegir cuenta
+  await askForAccount(
+    chatId,
+    userId,
+    telegramTx.id,
+    `✅ <b>${docLabel}</b>\n\n${dataLines}\n\n¿Desde qué cuenta?`
+  );
 }
 
 // ─── Procesamiento de callbacks (botones inline) ──────────────────────────────
@@ -160,6 +231,42 @@ async function handleCallback(
   data: string
 ): Promise<void> {
   const parts = data.split(":");
+
+  // ── Paso 0a: usuario quiere continuar pese a faltantes → preguntar cuenta ──
+  if (parts[0] === "proceed") {
+    const [, txId] = parts;
+    const tx = await db.telegramTransaction.findUnique({ where: { id: txId, userId } });
+    if (!tx || tx.status !== "PENDING") {
+      await answerCallbackQuery(queryId, "Esta transacción ya fue procesada.");
+      return;
+    }
+    await answerCallbackQuery(queryId, "Continuando…");
+    await editMessageText(
+      chatId,
+      messageId,
+      `✅ Continuando con los datos detectados.\n\n¿Desde qué cuenta?`
+    );
+    await askForAccount(chatId, userId, txId, "Selecciona la cuenta:");
+    return;
+  }
+
+  // ── Paso 0b: usuario descarta y quiere reenviar foto ──
+  if (parts[0] === "discard") {
+    const [, txId] = parts;
+    await db.telegramTransaction.updateMany({
+      where: { id: txId, userId, status: "PENDING" },
+      data: { status: "REJECTED" },
+    });
+    await answerCallbackQuery(queryId, "Cancelado");
+    await editMessageText(
+      chatId,
+      messageId,
+      `🔁 <b>Comprobante descartado.</b>\n\n` +
+      `Vuelve a enviar la foto, asegurándote de que se vean claramente:\n` +
+      `• Monto\n• Nombre y RUT de la contraparte\n• Cuenta de abono u origen\n• ID de transacción`
+    );
+    return;
+  }
 
   // ── Paso 1: eligió cuenta → preguntar categoría ──
   if (parts[0] === "acct") {
