@@ -1,6 +1,13 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import sharp from "sharp";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+
+const FLASH_MODEL = "gemini-2.0-flash";
+const PRO_MODEL = "gemini-2.0-pro-exp";
+
+const TARGET_MIN_DIM = 1600;
+const TARGET_MAX_DIM = 2200;
 
 export interface ExtractedTransaction {
   amount: number;
@@ -107,7 +114,27 @@ FORMATO DE SALIDA EXACTO (responde SOLO el JSON, sin texto adicional ni bloques 
     "fecha_hora_comprobante": null,
     "confianza": "alta" | "media" | "baja"
   }
-}`;
+}
+
+EJEMPLOS DE EXTRACCIÓN CORRECTA (memorízalos):
+
+Ejemplo 1 — Voucher Banco de Chile, transferencia enviada:
+Imagen muestra: encabezado "Transferencia exitosa", "Monto $250.000", "Descripción Traspaso a: hardware chile spa", "Fecha movimiento 27 de abril 2026", "Nombre Destinatario Hardware Chile Spa", "Rut Destinatario 77.280.441-5", "Cuenta Destinatario 0000000000097543918", "Rut Origen 26.952.482-0", "Cuenta Origen 001696993900", "Banco Banco BCI", "Id transaccion TEFMBCO260427155530457008 2240" (en dos líneas), "Fecha y hora 27 de abril 2026 15:55 hrs.", logo BANCO DE CHILE.
+
+Salida correcta:
+{"transaccion":{"documentType":"voucher","type":"EXPENSE","currency":"CLP","monto":250000,"descripcion":"Traspaso a: hardware chile spa","fecha_movimiento":"2026-04-27","nombre_origen":null,"rut_origen":"26.952.482-0","cuenta_origen":"001696993900","nombre_destinatario":"Hardware Chile Spa","rut_destinatario":"77.280.441-5","cuenta_abono":"0000000000097543918","banco_destino":"Banco BCI","id_transaccion":"TEFMBCO2604271555304570082240","fecha_hora_comprobante":"2026-04-27 15:55:00","confianza":"alta"}}
+
+Ejemplo 2 — Voucher BCI, transferencia enviada (formato distinto):
+Imagen muestra: encabezado "Comprobante de Transferencia", "Transferencia exitosa", "Pagado a Jose Rodriguez", "Cuenta destino Cuenta Vista ****1177", "Banco destino Prepago Los Heroes", "Monto $100.000", "Fecha y hora 29 de abril del 2026 14:33 hrs.", "Transacción TEFMBCO260429143330462564367".
+
+Salida correcta:
+{"transaccion":{"documentType":"voucher","type":"EXPENSE","currency":"CLP","monto":100000,"descripcion":"Pagado a Jose Rodriguez","fecha_movimiento":"2026-04-29","nombre_origen":null,"rut_origen":null,"cuenta_origen":null,"nombre_destinatario":"Jose Rodriguez","rut_destinatario":null,"cuenta_abono":"Cuenta Vista ****1177","banco_destino":"Prepago Los Heroes","id_transaccion":"TEFMBCO260429143330462564367","fecha_hora_comprobante":"2026-04-29 14:33:00","confianza":"alta"}}
+
+Notas de los ejemplos:
+- El "Banco" del Ejemplo 1 era el banco DEL DESTINATARIO (BCI) → va en banco_destino. El comprobante mismo era de Banco de Chile (logo) → eso no se incluye en la salida.
+- En el Ejemplo 2 los campos de RUT no aparecen → quedan null (NUNCA inventar).
+- El id_transaccion del Ejemplo 1 venía partido en dos líneas → CONCATENAR sin espacios.
+- Las cuentas con asteriscos (****1177) se mantienen literalmente.`;
 
 /**
  * Strips markdown code fences from a string that may wrap JSON.
@@ -208,68 +235,188 @@ function mapTransaccionToExtracted(t: RawTransaccion): ExtractedTransaction {
   };
 }
 
+/**
+ * Normaliza la imagen para mejorar la lectura OCR de Gemini:
+ * - Upscale (Lanczos) si el lado mayor < TARGET_MIN_DIM (texto chico se vuelve legible)
+ * - Downscale si > TARGET_MAX_DIM (evita payloads enormes)
+ * - normalize() = autocontrast (clave para vouchers con fondo gris claro)
+ * - sharpen(sigma=1) = bordes de texto más definidos
+ *
+ * Si sharp falla por cualquier razón (cold start raro, mimeType no soportado),
+ * devuelve el base64 original sin tocar — el preprocesamiento NUNCA bloquea el flujo.
+ */
+async function preprocessImage(
+  imageBase64: string,
+  mimeType: string
+): Promise<{ base64: string; mimeType: string }> {
+  try {
+    const inputBuffer = Buffer.from(imageBase64, "base64");
+    const meta = await sharp(inputBuffer).metadata();
+    const w = meta.width ?? 0;
+    const h = meta.height ?? 0;
+    const longSide = Math.max(w, h);
+
+    let pipeline = sharp(inputBuffer);
+
+    if (longSide > 0 && longSide < TARGET_MIN_DIM) {
+      const scale = TARGET_MIN_DIM / longSide;
+      const newW = Math.round(w * scale);
+      const newH = Math.round(h * scale);
+      pipeline = pipeline.resize(newW, newH, { kernel: "lanczos3" });
+    } else if (longSide > TARGET_MAX_DIM) {
+      const scale = TARGET_MAX_DIM / longSide;
+      const newW = Math.round(w * scale);
+      const newH = Math.round(h * scale);
+      pipeline = pipeline.resize(newW, newH, { kernel: "lanczos3" });
+    }
+
+    const outputBuffer = await pipeline
+      .normalize()
+      .sharpen({ sigma: 1.0 })
+      .jpeg({ quality: 90 })
+      .toBuffer();
+
+    console.log(
+      `[Gemini Vision] Preprocesamiento OK: ${w}x${h} ${mimeType} (${inputBuffer.length}B) → JPEG (${outputBuffer.length}B)`
+    );
+
+    return {
+      base64: outputBuffer.toString("base64"),
+      mimeType: "image/jpeg",
+    };
+  } catch (err) {
+    console.warn("[Gemini Vision] Preprocesamiento falló, usando imagen original:", err);
+    return { base64: imageBase64, mimeType };
+  }
+}
+
+/**
+ * Llama a Gemini con un modelo específico. Devuelve null si la respuesta no parsea
+ * o no contiene el campo `transaccion`. Si Gemini retornó error explícito, también null.
+ */
+async function runWithModel(
+  modelName: string,
+  imageBase64: string,
+  mimeType: string
+): Promise<ExtractedTransaction | null> {
+  const model = genAI.getGenerativeModel({
+    model: modelName,
+    generationConfig: {
+      temperature: 0.1,
+      maxOutputTokens: 2048,
+      responseMimeType: "application/json",
+    },
+  });
+
+  const result = await model.generateContent([
+    EXTRACTION_PROMPT,
+    { inlineData: { data: imageBase64, mimeType } },
+  ]);
+
+  const rawText = result.response.text();
+  console.log(`[Gemini Vision] (${modelName}) Respuesta raw:`, rawText.slice(0, 800));
+
+  const jsonText = stripCodeFences(rawText.trim());
+
+  let parsed: { transaccion?: RawTransaccion; error?: string };
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch (parseError) {
+    console.error(`[Gemini Vision] (${modelName}) Error parseando JSON:`, parseError);
+    return null;
+  }
+
+  if (parsed.error || !parsed.transaccion) {
+    console.warn(`[Gemini Vision] (${modelName}) Sin transaccion:`, parsed.error ?? jsonText.slice(0, 200));
+    return null;
+  }
+
+  return mapTransaccionToExtracted(parsed.transaccion);
+}
+
+/**
+ * Score numérico de la calidad de una extracción para elegir entre Flash y Pro.
+ * Mayor = mejor.
+ */
+function scoreExtraction(e: ExtractedTransaction | null): number {
+  if (!e) return -1;
+  let score = 0;
+  if (e.amount > 0) score += 100;
+  if (e.confidence === "high") score += 30;
+  else if (e.confidence === "medium") score += 15;
+  if (e.transactionId) score += 10;
+  if (e.counterpartyName) score += 5;
+  if (e.date) score += 5;
+  if (e.description && e.description.trim().length >= 3) score += 5;
+  return score;
+}
+
+/**
+ * Decide si vale la pena reintentar con Pro.
+ * Triggers: monto en 0, confianza baja, o nada extraído.
+ */
+function shouldFallbackToPro(e: ExtractedTransaction | null): boolean {
+  if (!e) return true;
+  if (e.amount <= 0) return true;
+  if (e.confidence === "low") return true;
+  return false;
+}
+
 export async function extractTransactionFromImage(
   imageBase64: string,
   mimeType: string = "image/jpeg"
 ): Promise<ExtractedTransaction | null> {
   try {
-    console.log("[Gemini Vision] Iniciando extracción. mimeType:", mimeType, "imageBase64 length:", imageBase64.length);
+    console.log(`[Gemini Vision] Iniciando extracción. mimeType=${mimeType} inputLen=${imageBase64.length}`);
 
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.0-flash",
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 2048,
-        responseMimeType: "application/json",
-      },
-    });
+    const prep = await preprocessImage(imageBase64, mimeType);
 
-    const result = await model.generateContent([
-      EXTRACTION_PROMPT,
-      {
-        inlineData: { data: imageBase64, mimeType },
-      },
-    ]);
-
-    const rawText = result.response.text();
-    console.log("[Gemini Vision] Respuesta raw de Gemini:", rawText.slice(0, 1000));
-
-    const jsonText = stripCodeFences(rawText.trim());
-
-    let parsed: { transaccion?: RawTransaccion; error?: string };
+    // Primer intento: Flash (rápido y barato)
+    let flash: ExtractedTransaction | null = null;
     try {
-      parsed = JSON.parse(jsonText);
-    } catch (parseError) {
-      console.error("[Gemini Vision] Error parseando JSON:", parseError, "| Texto:", jsonText.slice(0, 500));
-      return null;
+      flash = await runWithModel(FLASH_MODEL, prep.base64, prep.mimeType);
+    } catch (err) {
+      console.error("[Gemini Vision] Flash falló:", err);
     }
 
-    // Si Gemini igual respondió error a pesar del prompt, generar struct vacío
-    // para que el flujo de "datos faltantes" guíe al usuario
-    if (parsed.error || !parsed.transaccion) {
-      console.warn("[Gemini Vision] Sin transaccion en respuesta, devolviendo struct vacío:", parsed.error ?? jsonText.slice(0, 200));
-      return {
-        amount: 0,
-        type: "EXPENSE",
-        description: "",
-        date: null,
-        currency: "CLP",
-        confidence: "low",
-        documentType: "voucher",
-      };
+    // Si Flash entregó algo aceptable, devolverlo
+    if (!shouldFallbackToPro(flash)) {
+      console.log("[Gemini Vision] Modelo elegido: flash | score:", scoreExtraction(flash));
+      return flash;
     }
 
-    const extracted = mapTransaccionToExtracted(parsed.transaccion);
+    // Fallback: Pro (más caro, más capaz). Solo se activa cuando Flash claramente falló.
+    console.log(`[Gemini Vision] Flash con calidad baja (score=${scoreExtraction(flash)}), reintentando con ${PRO_MODEL}…`);
+    let pro: ExtractedTransaction | null = null;
+    try {
+      pro = await runWithModel(PRO_MODEL, prep.base64, prep.mimeType);
+    } catch (err) {
+      console.error("[Gemini Vision] Pro falló:", err);
+    }
 
-    console.log("[Gemini Vision] Extracción OK:", {
-      amount: extracted.amount,
-      type: extracted.type,
-      txId: extracted.transactionId,
-      counterparty: extracted.counterpartyName,
-      confidence: extracted.confidence,
-    });
+    const flashScore = scoreExtraction(flash);
+    const proScore = scoreExtraction(pro);
 
-    return extracted;
+    // Elegir el mejor de los dos por score
+    const winner = proScore >= flashScore ? pro : flash;
+    const winnerName = proScore >= flashScore ? "pro" : "flash";
+
+    if (winner) {
+      console.log(`[Gemini Vision] Modelo elegido: ${winnerName} | flashScore=${flashScore} proScore=${proScore} | amount=${winner.amount} confidence=${winner.confidence}`);
+      return winner;
+    }
+
+    // Ambos fallaron — devolver struct vacío para que el flujo de "datos faltantes" guíe al usuario
+    console.warn("[Gemini Vision] Flash y Pro fallaron. Devolviendo struct vacío.");
+    return {
+      amount: 0,
+      type: "EXPENSE",
+      description: "",
+      date: null,
+      currency: "CLP",
+      confidence: "low",
+      documentType: "voucher",
+    };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("[Gemini Vision] Error inesperado:", msg, error);
