@@ -9,6 +9,13 @@ export interface ParsedEmailTx {
   rawSnippet?: string;
   gmailMessageId: string;
   receivedAt: Date;
+  // Metadata extraída del cuerpo (paridad con voucher de Telegram)
+  transactionId?: string | null;
+  counterpartyName?: string | null;
+  counterpartyRut?: string | null;
+  counterpartyAccount?: string | null;
+  counterpartyBank?: string | null;
+  ownerAccount?: string | null;
 }
 
 export interface GmailTokenData {

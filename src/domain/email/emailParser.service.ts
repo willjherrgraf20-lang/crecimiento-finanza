@@ -86,6 +86,116 @@ function extractBankName(from: string): string {
   return "Banco desconocido";
 }
 
+/**
+ * Toma la primera captura no-vacía de varios regex sobre un texto.
+ * Limpia espacios extra al inicio/final del resultado.
+ */
+function firstMatch(text: string, patterns: RegExp[]): string | null {
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (m?.[1]) {
+      const v = m[1].trim().replace(/\s+/g, " ");
+      if (v) return v;
+    }
+  }
+  return null;
+}
+
+/**
+ * ID de transacción tipo Banco de Chile / BCI (TEFMBCO..., TEFMPGO...) puede venir
+ * partido en dos líneas en el snippet. Esta regex tolera salto de línea/espacio
+ * intermedio y luego concatena los fragmentos.
+ */
+function extractTransactionId(text: string): string | null {
+  // Formato BdC/BCI: TEF + 3 letras + dígitos largos (eventualmente con espacio en medio)
+  const tef = text.match(/\b(TEF[A-Z]{3}\d[\d\s]{15,})/i);
+  if (tef?.[1]) return tef[1].replace(/\s+/g, "");
+
+  // Formato genérico: "Id transaccion: XXXXX" / "Nº comprobante: XXXX"
+  const labeled = firstMatch(text, [
+    /(?:id\s+transacci[oó]n|n[uú]mero\s+(?:de\s+)?(?:transacci[oó]n|comprobante|operaci[oó]n))[:\s]+([A-Z0-9-]{6,})/i,
+    /(?:n[uú]mero|c[oó]digo)\s+(?:de\s+)?(?:operaci[oó]n|referencia|comprobante)[:\s]+([A-Z0-9-]{6,})/i,
+    /\bn[°º]\s+(?:operaci[oó]n|referencia|comprobante|tr[aá]mite)[:\s]+([A-Z0-9-]{6,})/i,
+  ]);
+  if (labeled) return labeled.replace(/\s+/g, "");
+
+  return null;
+}
+
+function extractRut(text: string, near?: RegExp): string | null {
+  // Formato chileno: 1-8 dígitos + opcional puntos + guión + dígito o K
+  const RUT_RE = /(\d{1,2}\.\d{3}\.\d{3}-[\dKk]|\d{7,8}-[\dKk])/;
+  if (near) {
+    const ctx = text.match(new RegExp(near.source + "[\\s\\S]{0,80}?" + RUT_RE.source, "i"));
+    if (ctx?.[1]) return ctx[1].toUpperCase();
+  }
+  const m = text.match(RUT_RE);
+  return m?.[1] ? m[1].toUpperCase() : null;
+}
+
+function extractCounterpartyName(text: string, type: "INCOME" | "EXPENSE"): string | null {
+  // Para EXPENSE: "Traspaso a/Pago a/Transferencia a/Pagado a NOMBRE"
+  // Para INCOME:  "Traspaso de/Recibido de/Depósito de/Pagado por NOMBRE"
+  const patterns = type === "INCOME"
+    ? [
+        /(?:traspaso\s+de|transferencia\s+de|abono\s+de|dep[oó]sito\s+de|recibido\s+de|pagado\s+por|recibiste\s+(?:un\s+)?(?:abono|dep[oó]sito)\s+de)[:\s]+([A-ZÁÉÍÓÚÑ][^\n$\d]{2,60}?)(?=\s*(?:\n|por|rut|cuenta|monto|$|\d{2}\.))/i,
+      ]
+    : [
+        /(?:traspaso\s+a|transferencia\s+a|pago\s+a|pagado\s+a|env[ií]o\s+a)[:\s]+([A-ZÁÉÍÓÚÑ][^\n$\d]{2,60}?)(?=\s*(?:\n|por|rut|cuenta|monto|$|\d{2}\.))/i,
+      ];
+  return firstMatch(text, patterns);
+}
+
+function extractAccountNumber(text: string, labels: string[]): string | null {
+  // Etiqueta + número (con posibles asteriscos para enmascarado tipo "****1177")
+  for (const lab of labels) {
+    const re = new RegExp(`${lab}\\s*[:\\-]?\\s*([0-9*]{4,}(?:[\\s-]?[0-9*]{2,})*)`, "i");
+    const m = text.match(re);
+    if (m?.[1]) return m[1].trim().replace(/\s+/g, "");
+  }
+  return null;
+}
+
+interface VoucherMetadata {
+  transactionId: string | null;
+  counterpartyName: string | null;
+  counterpartyRut: string | null;
+  counterpartyAccount: string | null;
+  counterpartyBank: string | null;
+  ownerAccount: string | null;
+}
+
+/**
+ * Extrae metadata enriquecida del email (RUT, cuentas, ID transacción).
+ * Diseñado para tolerar ausencia de cualquier campo — todos quedan en null si
+ * no se encuentran. NUNCA inventa datos.
+ */
+function extractVoucherMetadata(text: string, type: "INCOME" | "EXPENSE"): VoucherMetadata {
+  const transactionId = extractTransactionId(text);
+  const counterpartyName = extractCounterpartyName(text, type);
+
+  // RUT con preferencia por el "Rut origen/destinatario" según dirección
+  const rutNearLabel = type === "INCOME"
+    ? /rut\s+(?:origen|del?\s+(?:remitente|emisor))/i
+    : /rut\s+(?:destinatario|del?\s+(?:beneficiario|receptor))/i;
+  const counterpartyRut = extractRut(text, rutNearLabel) ?? extractRut(text);
+
+  const counterpartyAccount = type === "INCOME"
+    ? extractAccountNumber(text, ["cuenta\\s+origen", "desde\\s+la\\s+cuenta"])
+    : extractAccountNumber(text, ["cuenta\\s+abono", "cuenta\\s+destinatari[oa]", "cuenta\\s+destino", "cuenta\\s+vista"]);
+
+  const ownerAccount = type === "INCOME"
+    ? extractAccountNumber(text, ["cuenta\\s+abono", "tu\\s+cuenta\\s+(?:vista|corriente)", "cuenta\\s+(?:de\\s+)?dep[oó]sito"])
+    : extractAccountNumber(text, ["cuenta\\s+origen", "desde\\s+(?:tu\\s+)?cuenta", "cuenta\\s+cargo"]);
+
+  // Banco destino: aparece como "Banco destino: XXX" o "Banco: XXX" cuando el destinatario es de otro banco
+  const counterpartyBank = firstMatch(text, [
+    /banco\s+destino[:\s]+([A-ZÁÉÍÓÚÑ][^\n$\d]{2,40}?)(?=\s*(?:\n|cuenta|rut|monto|$))/i,
+  ]);
+
+  return { transactionId, counterpartyName, counterpartyRut, counterpartyAccount, counterpartyBank, ownerAccount };
+}
+
 export function parseEmailTransaction(
   gmailMessageId: string,
   subject: string,
@@ -187,6 +297,9 @@ export function parseEmailTransaction(
   const currency = matchedCurrency ?? detectCurrency(text);
   const bankName = extractBankName(from);
 
+  // Metadata extra: RUT, cuentas, ID — null si no se detectan, NO se inventa
+  const meta = extractVoucherMetadata(text, type);
+
   return {
     amount,
     type,
@@ -198,6 +311,12 @@ export function parseEmailTransaction(
     rawSnippet: snippet,
     gmailMessageId,
     receivedAt,
+    transactionId: meta.transactionId,
+    counterpartyName: meta.counterpartyName,
+    counterpartyRut: meta.counterpartyRut,
+    counterpartyAccount: meta.counterpartyAccount,
+    counterpartyBank: meta.counterpartyBank ?? (bankName !== "Banco desconocido" ? bankName : null),
+    ownerAccount: meta.ownerAccount,
   };
 }
 

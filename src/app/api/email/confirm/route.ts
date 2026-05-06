@@ -11,7 +11,7 @@ const confirmSchema = z.object({
   amount: z.number().positive(),
   type: z.enum(["EXPENSE", "INCOME"]),
   description: z.string().optional(),
-  currency: z.string().length(3).default("CLP"),
+  currency: z.string().min(2).max(10).default("CLP"),
 });
 
 export async function POST(req: NextRequest) {
@@ -29,7 +29,27 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Email transaction no encontrada" }, { status: 404 });
     }
 
-    // Crear el gasto/ingreso
+    // Idempotencia: si ya existe Expense con el mismo transactionId, no duplicar.
+    // Marca el EmailTransaction como CONFIRMED apuntando al Expense existente.
+    if (emailTx.transactionId) {
+      const existing = await db.expense.findUnique({
+        where: { user_transaction_unique: { userId: session.userId, transactionId: emailTx.transactionId } },
+      });
+      if (existing) {
+        await db.emailTransaction.update({
+          where: { id: emailTx.id },
+          data: { status: "CONFIRMED", expenseId: existing.id },
+        });
+        return NextResponse.json({
+          ok: true,
+          expense: existing,
+          duplicate: true,
+          message: "Este movimiento ya estaba registrado. Se vinculó el email al expense existente.",
+        });
+      }
+    }
+
+    // Crear el gasto/ingreso con la metadata extraída del email
     const expense = await createExpense({
       userId: session.userId,
       accountId: data.accountId,
@@ -39,6 +59,11 @@ export async function POST(req: NextRequest) {
       description: data.description ?? emailTx.parsedDesc ?? emailTx.rawSubject,
       date: emailTx.parsedDate ?? emailTx.receivedAt,
       currency: data.currency,
+      transactionId: emailTx.transactionId,
+      counterpartyName: emailTx.counterpartyName,
+      counterpartyRut: emailTx.counterpartyRut,
+      counterpartyAccount: emailTx.counterpartyAccount,
+      counterpartyBank: emailTx.counterpartyBank,
     });
 
     // Actualizar el EmailTransaction a CONFIRMED
@@ -53,9 +78,48 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No autorizado" }, { status: 401 });
     }
     if (error instanceof z.ZodError) {
-      return NextResponse.json({ error: error.errors }, { status: 400 });
+      const msg = error.issues.map((i) => i.message).join(", ");
+      return NextResponse.json({ error: msg }, { status: 400 });
     }
-    console.error(error);
+    console.error("[email/confirm] Error:", error);
+    return NextResponse.json({ error: "Error del servidor" }, { status: 500 });
+  }
+}
+
+// Endpoint auxiliar para sugerir cuenta auto-asociada por número (paridad con bot Telegram).
+// El frontend lo puede llamar después de fetchear el EmailTransaction para pre-seleccionar
+// la cuenta cuando se detecta match en owner_account.
+export async function GET(req: NextRequest) {
+  try {
+    const session = await requireAuth();
+    const url = new URL(req.url);
+    const emailTxId = url.searchParams.get("emailTransactionId");
+    if (!emailTxId) {
+      return NextResponse.json({ error: "emailTransactionId requerido" }, { status: 400 });
+    }
+
+    const emailTx = await db.emailTransaction.findFirst({
+      where: { id: emailTxId, userId: session.userId },
+    });
+    if (!emailTx) return NextResponse.json({ matchedAccountId: null });
+    if (!emailTx.ownerAccount) return NextResponse.json({ matchedAccountId: null });
+
+    // Normalizar (quitar no-numéricos y ceros a la izquierda) para tolerar variantes
+    const target = emailTx.ownerAccount.replace(/\D/g, "").replace(/^0+/, "");
+    if (!target) return NextResponse.json({ matchedAccountId: null });
+
+    const accounts = await db.account.findMany({ where: { userId: session.userId } });
+    const matched = accounts.find((acc) => {
+      const norm = (acc.accountNumber ?? "").replace(/\D/g, "").replace(/^0+/, "");
+      return norm && norm === target;
+    });
+
+    return NextResponse.json({ matchedAccountId: matched?.id ?? null });
+  } catch (error) {
+    if (error instanceof Error && error.message === "Unauthorized") {
+      return NextResponse.json({ error: "No autorizado" }, { status: 401 });
+    }
+    console.error("[email/confirm GET] Error:", error);
     return NextResponse.json({ error: "Error del servidor" }, { status: 500 });
   }
 }

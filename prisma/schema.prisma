@@ -383,6 +383,13 @@ model EmailTransaction {
   parsedDesc     String?       @map("parsed_desc")
   parsedDate     DateTime?     @map("parsed_date")
   parsedCurrency String?       @default("CLP") @map("parsed_currency")
+  // Metadata extraída del cuerpo del email (paridad con TelegramTransaction)
+  transactionId       String? @map("transaction_id")
+  counterpartyName    String? @map("counterparty_name")
+  counterpartyRut     String? @map("counterparty_rut")
+  counterpartyAccount String? @map("counterparty_account")
+  counterpartyBank    String? @map("counterparty_bank")
+  ownerAccount        String? @map("owner_account")
   expenseId      String?       @db.Uuid @map("expense_id")
   receivedAt     DateTime      @map("received_at")
   createdAt      DateTime      @default(now()) @map("created_at")
@@ -392,6 +399,7 @@ model EmailTransaction {
 
   @@index([userId, status])
   @@index([userId, receivedAt(sort: Desc)])
+  @@index([userId, transactionId])
   @@map("email_transactions")
 }
 

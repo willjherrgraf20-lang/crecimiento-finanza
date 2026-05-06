@@ -196,6 +196,12 @@ export async function scanBankEmails(userId: string): Promise<{
         parsedDate: parsed.date,
         parsedCurrency: parsed.currency,
         receivedAt: parsed.receivedAt,
+        transactionId: parsed.transactionId ?? null,
+        counterpartyName: parsed.counterpartyName ?? null,
+        counterpartyRut: parsed.counterpartyRut ?? null,
+        counterpartyAccount: parsed.counterpartyAccount ?? null,
+        counterpartyBank: parsed.counterpartyBank ?? null,
+        ownerAccount: parsed.ownerAccount ?? null,
       },
     });
     newPending++;
